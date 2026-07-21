@@ -17,7 +17,7 @@ export function AuditStep() {
     <Card>
       <CardContent>
         <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-          <Typography variant="h6">6. Audit log</Typography>
+          <Typography variant="h6">4. Audit log</Typography>
           <Button size="small" onClick={reload}>
             Refresh
           </Button>

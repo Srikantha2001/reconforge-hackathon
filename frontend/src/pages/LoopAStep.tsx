@@ -99,7 +99,7 @@ export function LoopAStep({ run, onNewRun }: LoopAStepProps) {
       <Card>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            5. Learning loops
+            3. Learning loops
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             Loop A: manually-matched breaks are aggregated by which rule disagreed; if a

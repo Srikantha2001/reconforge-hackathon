@@ -1,35 +1,54 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Alert,
   Button,
   Card,
   CardContent,
+  Chip,
   Divider,
-  FormControlLabel,
   Stack,
-  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
   Typography,
 } from '@mui/material'
 import { useActor } from '../context/ActorContext'
 import { api, ApiError } from '../api'
-import type { ConfigOut, RunOut } from '../types'
+import type { BreakOut, ConfigOut, DashboardOut, RunOut } from '../types'
+import { ARCHETYPE_LABELS } from '../types'
 import { SplitMatchedBar } from '../components/SplitMatchedBar'
 import { Figure } from '../components/Figure'
+import { SeverityChip } from '../components/SeverityChip'
+import { ConfidenceBadge } from '../components/ConfidenceBadge'
+import { BreakDrilldown } from '../components/BreakDrilldown'
 
 interface RunStepProps {
   config: ConfigOut
   run: RunOut | null
+  useSeed: boolean
+  sourceFile: File | null
+  targetFile: File | null
   onRunCreated: (run: RunOut) => void
 }
 
-export function RunStep({ config, run, onRunCreated }: RunStepProps) {
+export function RunStep({ config, run, useSeed, sourceFile, targetFile, onRunCreated }: RunStepProps) {
   const { actingAs } = useActor()
-  const [useSeed, setUseSeed] = useState(true)
-  const [ledgerFile, setLedgerFile] = useState<File | null>(null)
-  const [statementFile, setStatementFile] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [repro, setRepro] = useState<{ reproducible: boolean; recomputed_hash: string } | null>(null)
+
+  const [breaks, setBreaks] = useState<BreakOut[]>([])
+  const [dashboard, setDashboard] = useState<DashboardOut | null>(null)
+  const [selected, setSelected] = useState<BreakOut | null>(null)
+
+  useEffect(() => {
+    if (run) {
+      api.runBreaks(run.id).then(setBreaks)
+      api.runDashboard(run.id).then(setDashboard)
+    }
+  }, [run?.id])
 
   const runRecon = async () => {
     setLoading(true)
@@ -38,11 +57,11 @@ export function RunStep({ config, run, onRunCreated }: RunStepProps) {
     try {
       const result = useSeed
         ? await api.createRunFromSeed(config.id, actingAs)
-        : ledgerFile && statementFile
-          ? await api.createRunFromUpload(config.id, actingAs, ledgerFile, statementFile)
+        : sourceFile && targetFile
+          ? await api.createRunFromUpload(config.id, actingAs, sourceFile, targetFile)
           : null
       if (!result) {
-        setError('Choose both a ledger and statement CSV, or use the seeded pair.')
+        setError('Choose both a source and target CSV back in Configure, or use the seeded pair.')
         return
       }
       onRunCreated(result)
@@ -59,49 +78,34 @@ export function RunStep({ config, run, onRunCreated }: RunStepProps) {
     setRepro(result)
   }
 
+  const updateBreak = (b: BreakOut) => {
+    setBreaks((prev) => prev.map((x) => (x.id === b.id ? b : x)))
+    setSelected(b)
+    if (run) api.runDashboard(run.id).then(setDashboard)
+  }
+
   return (
     <Stack spacing={3}>
       <Card>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            3. Run — {config.recon_name}{' '}
+            2. Run — {config.recon_name}{' '}
             <Typography component="span" color="text.secondary" variant="body2">
               (v{config.version})
             </Typography>
           </Typography>
 
-          <FormControlLabel
-            control={<Switch checked={useSeed} onChange={(e) => setUseSeed(e.target.checked)} />}
-            label="Use rehearsed seeded pair (ledger.csv / statement.csv)"
-          />
-
-          {!useSeed && (
-            <Stack direction="row" spacing={2} sx={{ my: 2 }}>
-              <Button component="label" variant="outlined">
-                {ledgerFile ? ledgerFile.name : 'Choose ledger CSV'}
-                <input
-                  type="file"
-                  accept=".csv"
-                  hidden
-                  onChange={(e) => setLedgerFile(e.target.files?.[0] ?? null)}
-                />
-              </Button>
-              <Button component="label" variant="outlined">
-                {statementFile ? statementFile.name : 'Choose statement CSV'}
-                <input
-                  type="file"
-                  accept=".csv"
-                  hidden
-                  onChange={(e) => setStatementFile(e.target.files?.[0] ?? null)}
-                />
-              </Button>
-            </Stack>
-          )}
-
-          <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+          <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
             <Button variant="contained" onClick={runRecon} disabled={loading}>
               {loading ? 'Running…' : 'Run reconciliation'}
             </Button>
+            <Typography variant="caption" color="text.secondary">
+              {useSeed
+                ? 'Using rehearsed seeded pair (ledger.csv / statement.csv)'
+                : sourceFile && targetFile
+                  ? `${sourceFile.name} + ${targetFile.name}`
+                  : 'No files selected — go back to Configure to upload'}
+            </Typography>
           </Stack>
 
           {error && (
@@ -164,6 +168,61 @@ export function RunStep({ config, run, onRunCreated }: RunStepProps) {
             </Stack>
           </CardContent>
         </Card>
+      )}
+
+      {run && (
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Breaks board
+            </Typography>
+            {dashboard && (
+              <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', mb: 1 }}>
+                {Object.entries(dashboard.archetype_counts).map(([k, v]) => (
+                  <Chip key={k} size="small" variant="outlined" label={`${ARCHETYPE_LABELS[k] ?? k}: ${v}`} />
+                ))}
+              </Stack>
+            )}
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Key</TableCell>
+                  <TableCell>Archetype</TableCell>
+                  <TableCell>Severity</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Confidence</TableCell>
+                  <TableCell />
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {breaks.map((b) => (
+                  <TableRow key={b.id} hover>
+                    <TableCell>
+                      <Figure>{b.break_key}</Figure>
+                    </TableCell>
+                    <TableCell>{ARCHETYPE_LABELS[b.archetype ?? ''] ?? b.archetype}</TableCell>
+                    <TableCell>
+                      <SeverityChip severity={b.severity} />
+                    </TableCell>
+                    <TableCell>
+                      <Chip size="small" label={b.status} variant="outlined" />
+                    </TableCell>
+                    <TableCell>{b.sme_confidence !== null && <ConfidenceBadge confidence={b.sme_confidence} />}</TableCell>
+                    <TableCell align="right">
+                      <Button size="small" onClick={() => setSelected(b)}>
+                        Inspect
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      {selected && (
+        <BreakDrilldown brk={selected} onClose={() => setSelected(null)} onUpdated={updateBreak} />
       )}
     </Stack>
   )

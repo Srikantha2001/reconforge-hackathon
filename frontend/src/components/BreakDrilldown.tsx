@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   Alert,
   Box,
@@ -24,11 +24,11 @@ import {
 import CloseIcon from '@mui/icons-material/Close'
 import { useActor } from '../context/ActorContext'
 import { api, ApiError } from '../api'
-import type { AdviseOut, BreakOut, ChaserOut, DashboardOut, RunOut } from '../types'
+import type { AdviseOut, BreakOut, ChaserOut } from '../types'
 import { ARCHETYPE_LABELS } from '../types'
-import { SeverityChip } from '../components/SeverityChip'
-import { ConfidenceBadge } from '../components/ConfidenceBadge'
-import { Figure } from '../components/Figure'
+import { SeverityChip } from './SeverityChip'
+import { ConfidenceBadge } from './ConfidenceBadge'
+import { Figure } from './Figure'
 
 function RowDiff({ row_a, row_b }: { row_a: Record<string, unknown> | null; row_b: Record<string, unknown> | null }) {
   const keys = Array.from(new Set([...(row_a ? Object.keys(row_a) : []), ...(row_b ? Object.keys(row_b) : [])]))
@@ -69,7 +69,7 @@ interface BreakDrilldownProps {
   onUpdated: (b: BreakOut) => void
 }
 
-function BreakDrilldown({ brk, onClose, onUpdated }: BreakDrilldownProps) {
+export function BreakDrilldown({ brk, onClose, onUpdated }: BreakDrilldownProps) {
   const { actingAs } = useActor()
   const [advice, setAdvice] = useState<AdviseOut | null>(null)
   const [chaser, setChaser] = useState<ChaserOut | null>(null)
@@ -241,85 +241,5 @@ function BreakDrilldown({ brk, onClose, onUpdated }: BreakDrilldownProps) {
         </Button>
       </DialogActions>
     </Dialog>
-  )
-}
-
-interface BreaksStepProps {
-  run: RunOut
-}
-
-export function BreaksStep({ run }: BreaksStepProps) {
-  const [breaks, setBreaks] = useState<BreakOut[]>([])
-  const [dashboard, setDashboard] = useState<DashboardOut | null>(null)
-  const [selected, setSelected] = useState<BreakOut | null>(null)
-
-  const reload = () => {
-    api.runBreaks(run.id).then(setBreaks)
-    api.runDashboard(run.id).then(setDashboard)
-  }
-
-  useEffect(reload, [run.id])
-
-  const updateBreak = (b: BreakOut) => {
-    setBreaks((prev) => prev.map((x) => (x.id === b.id ? b : x)))
-    setSelected(b)
-    api.runDashboard(run.id).then(setDashboard)
-  }
-
-  return (
-    <Stack spacing={3}>
-      <Card>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>
-            4. Breaks board
-          </Typography>
-          {dashboard && (
-            <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', mb: 1 }}>
-              {Object.entries(dashboard.archetype_counts).map(([k, v]) => (
-                <Chip key={k} size="small" variant="outlined" label={`${ARCHETYPE_LABELS[k] ?? k}: ${v}`} />
-              ))}
-            </Stack>
-          )}
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Key</TableCell>
-                <TableCell>Archetype</TableCell>
-                <TableCell>Severity</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell>Confidence</TableCell>
-                <TableCell />
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {breaks.map((b) => (
-                <TableRow key={b.id} hover>
-                  <TableCell>
-                    <Figure>{b.break_key}</Figure>
-                  </TableCell>
-                  <TableCell>{ARCHETYPE_LABELS[b.archetype ?? ''] ?? b.archetype}</TableCell>
-                  <TableCell>
-                    <SeverityChip severity={b.severity} />
-                  </TableCell>
-                  <TableCell>
-                    <Chip size="small" label={b.status} variant="outlined" />
-                  </TableCell>
-                  <TableCell>{b.sme_confidence !== null && <ConfidenceBadge confidence={b.sme_confidence} />}</TableCell>
-                  <TableCell align="right">
-                    <Button size="small" onClick={() => setSelected(b)}>
-                      Inspect
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      {selected && (
-        <BreakDrilldown brk={selected} onClose={() => setSelected(null)} onUpdated={updateBreak} />
-      )}
-    </Stack>
   )
 }
