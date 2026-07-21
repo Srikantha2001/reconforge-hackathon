@@ -1,0 +1,6 @@
+pandas
+jsonschema
+pytest
+streamlit
+google-generativeai
+python-dotenv

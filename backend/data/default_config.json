@@ -1,0 +1,49 @@
+{
+  "recon_name": "Nostro_USD_Daily",
+  "source_a": {
+    "alias": "ledger",
+    "key_columns": [
+      "trade_id"
+    ]
+  },
+  "source_b": {
+    "alias": "statement",
+    "key_columns": [
+      "ref"
+    ]
+  },
+  "transforms": [
+    {
+      "field": "amount",
+      "op": "abs"
+    },
+    {
+      "field": "ccy",
+      "op": "upper"
+    }
+  ],
+  "match_rules": [
+    {
+      "field_a": "trade_id",
+      "field_b": "ref",
+      "type": "exact"
+    },
+    {
+      "field_a": "amount",
+      "field_b": "amount",
+      "type": "numeric_tolerance",
+      "tolerance": 0.01
+    },
+    {
+      "field_a": "value_date",
+      "field_b": "value_date",
+      "type": "date_tolerance",
+      "tolerance_days": 2
+    },
+    {
+      "field_a": "account",
+      "field_b": "account",
+      "type": "exact"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: reconforge-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-reconforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-reconforge}
+      POSTGRES_DB: ${POSTGRES_DB:-reconforge}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reconforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: reconforge-backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-reconforge}:${POSTGRES_PASSWORD:-reconforge}@db:5432/${POSTGRES_DB:-reconforge}
+      LLM_PROVIDER: ${LLM_PROVIDER:-stub}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      STP_THRESHOLD: ${STP_THRESHOLD:-0.90}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/uploads:/app/uploads
+
+volumes:
+  pgdata:

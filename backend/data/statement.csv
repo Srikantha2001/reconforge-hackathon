@@ -1,0 +1,76 @@
+ref,amount,ccy,value_date,account,description
+CLN0001,3215.16,USD,2026-07-12,ACC-002,Settlement for Globex Ltd
+CLN0002,740.71,USD,2026-07-03,ACC-001,Settlement for Soylent Co
+CLN0003,2138.51,USD,2026-07-18,ACC-002,Settlement for Globex Ltd
+CLN0004,2551.51,USD,2026-07-03,ACC-002,Settlement for Hooli
+CLN0005,3266.93,GBP,2026-07-07,ACC-002,Settlement for Umbrella Inc
+CLN0006,2966.87,USD,2026-07-15,ACC-006,Settlement for Umbrella Inc
+CLN0007,1734.24,USD,2026-07-14,ACC-003,Settlement for Acme Corp
+CLN0008,509.09,USD,2026-07-09,ACC-003,Settlement for Soylent Co
+CLN0009,1359.38,USD,2026-07-06,ACC-005,Settlement for Acme Corp
+CLN0010,4866.92,EUR,2026-07-18,ACC-005,Settlement for Initech
+CLN0011,4155.55,GBP,2026-07-09,ACC-005,Settlement for Globex Ltd
+CLN0012,3537.63,USD,2026-07-13,ACC-003,Settlement for Acme Corp
+CLN0013,4283.82,USD,2026-07-08,ACC-003,Settlement for Umbrella Inc
+CLN0014,3196.64,USD,2026-07-15,ACC-003,Settlement for Initech
+CLN0015,1087.06,USD,2026-06-30,ACC-001,Settlement for Soylent Co
+CLN0016,3193.14,GBP,2026-07-13,ACC-002,Settlement for Umbrella Inc
+CLN0017,1928.3,GBP,2026-07-13,ACC-006,Settlement for Initech
+CLN0018,4222.12,USD,2026-07-13,ACC-001,Settlement for Initech
+CLN0019,2035.77,USD,2026-07-14,ACC-005,Settlement for Hooli
+CLN0020,1607.66,EUR,2026-07-08,ACC-006,Settlement for Umbrella Inc
+CLN0021,757.21,USD,2026-07-13,ACC-006,Settlement for Soylent Co
+CLN0022,2717.94,GBP,2026-07-07,ACC-005,Settlement for Umbrella Inc
+CLN0023,1841.88,USD,2026-07-04,ACC-004,Settlement for Acme Corp
+CLN0024,3791.12,USD,2026-07-16,ACC-006,Settlement for Globex Ltd
+CLN0025,3970.79,EUR,2026-07-01,ACC-001,Settlement for Umbrella Inc
+CLN0026,1939.02,EUR,2026-07-04,ACC-003,Settlement for Soylent Co
+CLN0027,4310.86,USD,2026-07-17,ACC-006,Settlement for Soylent Co
+CLN0028,3766.85,USD,2026-07-17,ACC-003,Settlement for Umbrella Inc
+CLN0029,832.88,USD,2026-07-12,ACC-005,Settlement for Globex Ltd
+CLN0030,2563.02,USD,2026-06-30,ACC-003,Settlement for Hooli
+CLN0031,2562.93,USD,2026-07-16,ACC-003,Settlement for Globex Ltd
+CLN0032,2719.93,GBP,2026-07-20,ACC-005,Settlement for Initech
+CLN0033,2468.6,USD,2026-07-09,ACC-003,Settlement for Globex Ltd
+CLN0034,336.73,GBP,2026-07-18,ACC-001,Settlement for Hooli
+CLN0035,2455.65,USD,2026-07-03,ACC-002,Settlement for Globex Ltd
+CLN0036,3315.77,GBP,2026-07-15,ACC-003,Settlement for Soylent Co
+CLN0037,4368.54,EUR,2026-07-14,ACC-005,Settlement for Hooli
+CLN0038,3464.84,USD,2026-07-08,ACC-006,Settlement for Hooli
+CLN0039,1898.43,GBP,2026-07-06,ACC-001,Settlement for Globex Ltd
+CLN0040,1162.25,USD,2026-07-20,ACC-005,Settlement for Soylent Co
+CLN0041,1189.07,USD,2026-07-20,ACC-001,Settlement for Hooli
+CLN0042,3173.96,USD,2026-07-18,ACC-001,Settlement for Initech
+CLN0043,400.74,USD,2026-07-12,ACC-006,Settlement for Umbrella Inc
+CLN0044,1110.47,USD,2026-07-02,ACC-005,Settlement for Umbrella Inc
+CLN0045,1252.84,EUR,2026-07-07,ACC-002,Settlement for Acme Corp
+CLN0046,529.81,EUR,2026-07-09,ACC-004,Settlement for Umbrella Inc
+CLN0047,2361.77,USD,2026-06-30,ACC-006,Settlement for Acme Corp
+CLN0048,350.03,USD,2026-07-17,ACC-002,Settlement for Globex Ltd
+CLN0049,991.53,EUR,2026-07-16,ACC-004,Settlement for Globex Ltd
+CLN0050,1428.8,USD,2026-07-18,ACC-004,Settlement for Soylent Co
+CLN0051,534.65,GBP,2026-07-20,ACC-001,Settlement for Globex Ltd
+CLN0052,873.24,EUR,2026-07-05,ACC-002,Settlement for Umbrella Inc
+CLN0053,4517.09,USD,2026-07-08,ACC-001,Settlement for Umbrella Inc
+CLN0054,1362.76,EUR,2026-07-11,ACC-004,Settlement for Hooli
+CLN0055,4788.72,GBP,2026-07-05,ACC-002,Settlement for Globex Ltd
+DRF0001,960.45,USD,2026-07-12,ACC-001,Settlement (delayed)
+DRF0002,2233.64,USD,2026-07-11,ACC-001,Settlement (delayed)
+DRF0003,1009.45,USD,2026-07-10,ACC-001,Settlement (delayed)
+DRF0004,1482.69,USD,2026-07-09,ACC-005,Settlement (delayed)
+DRF0005,264.95,USD,2026-07-08,ACC-005,Settlement (delayed)
+FXR0001,915.52,USD,2026-07-15,ACC-001,FX-converted settlement
+FXR0002,1204.79,USD,2026-07-18,ACC-006,FX-converted settlement
+PFL0001,150.0,USD,2026-07-08,ACC-001,Partial settlement leg
+PFL0001,150.0,USD,2026-07-08,ACC-001,Partial settlement leg
+DUP0001,250.0,USD,2026-07-13,ACC-005,Duplicate posting
+DUP0001,250.0,USD,2026-07-13,ACC-005,Duplicate posting
+FEE0001,314.0,USD,2026-07-19,ACC-005,Includes service fee
+FEE0002,192.0,USD,2026-07-07,ACC-006,Includes service fee
+WAC0001,410.0,USD,2026-07-13,ACC-004,Posted to alternate account
+WAC0002,733.25,USD,2026-07-11,ACC-003,Posted to alternate account
+OLD0002,897.27,USD,2026-06-20,ACC-001,Unmatched legacy posting
+TOL0001,1755.42,USD,2026-07-14,ACC-005,Amount discrepancy
+TOL0002,1060.42,USD,2026-07-16,ACC-003,Amount discrepancy
+fmt2001,640.0,USD,2026-07-13,ACC-003,Differently formatted reference
+fmt2002,275.5,USD,2026-07-15,ACC-004,Differently formatted reference

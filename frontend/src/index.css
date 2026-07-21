@@ -1,0 +1,9 @@
+/* CssBaseline (MUI) handles the reset; this just removes the Vite template
+   scaffolding CSS that isn't relevant to the ReconForge UI. */
+#root {
+  min-height: 100vh;
+}
+
+body {
+  margin: 0;
+}
