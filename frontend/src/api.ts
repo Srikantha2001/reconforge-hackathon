@@ -1,24 +1,39 @@
-// Thin fetch wrapper for the ReconForge API. Relative '/api' path is proxied
-// to the backend by Vite in dev (see vite.config.ts); in production, serve
-// behind a reverse proxy that forwards /api the same way.
+// v2 API client. Relative '/api' is proxied to the backend by Vite in dev.
 import type {
-  Actor,
-  AdviseOut,
   AuditLogOut,
+  BreakAnalysisOut,
   BreakOut,
-  ChaserOut,
+  CassReconciliationOut,
+  CheckerDecisionOut,
+  ClientReconOut,
+  ClientUploadOut,
   ConfigOut,
-  DashboardOut,
-  LoopAAggregateGroup,
-  LoopAProposeOut,
+  EvidencePack,
+  LoopAAggregateOut,
+  LoopAProposeOutV2,
   LoopAWhatIfOut,
+  MakerSubmitOut,
+  PassStatOut,
+  PendingActionOut,
+  PositionProofOut,
+  RegulatoryNotificationOut,
   ReproducibilityCheckOut,
   ResolutionMemoryOut,
   RunOut,
-  SeedInfo,
+  RunSummaryOut,
+  TokenResponse,
 } from './types'
 
 const BASE = '/api'
+
+let authToken: string | null = null
+export function setAuthToken(token: string | null) {
+  authToken = token
+}
+let onUnauthorized: (() => void) | null = null
+export function setUnauthorizedHandler(fn: () => void) {
+  onUnauthorized = fn
+}
 
 class ApiError extends Error {
   status: number
@@ -31,11 +46,13 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const resp = await fetch(`${BASE}${path}`, {
-    headers: options.body instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
-    ...options,
-  })
+  const headers: Record<string, string> = {}
+  if (!(options.body instanceof FormData)) headers['Content-Type'] = 'application/json'
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`
+
+  const resp = await fetch(`${BASE}${path}`, { ...options, headers })
   if (!resp.ok) {
+    if (resp.status === 401 && onUnauthorized) onUnauthorized()
     let detail: unknown
     try {
       detail = await resp.json()
@@ -54,75 +71,88 @@ const post = <T>(path: string, body?: unknown) =>
 
 export const api = {
   health: () => get<{ status: string; llm_provider: string }>('/health'),
-  actors: () => get<Actor[]>('/actors'),
 
-  seedInfo: () => get<SeedInfo>('/seed/info'),
-  seedGenerate: () => post<{ status: string; dir: string }>('/seed/generate'),
+  // auth
+  login: (email: string, password: string) => post<TokenResponse>('/auth/login', { email, password }),
 
-  authorConfig: (body: {
-    nl_description: string
-    actor_id: string
-    columns_a: string[]
-    columns_b: string[]
-    recon_name_hint?: string
-  }) => post<ConfigOut>('/configs/author', body),
+  // configs
+  authorConfig: (nl_description = '', recon_name_hint?: string) =>
+    post<ConfigOut>('/configs/author', { nl_description, recon_name_hint }),
+  submitConfig: (id: number) => post<ConfigOut>(`/configs/${id}/submit`),
+  approveConfig: (id: number, approved = true, notes?: string) =>
+    post<ConfigOut>(`/configs/${id}/approve`, { approved, notes }),
   getConfig: (id: number) => get<ConfigOut>(`/configs/${id}`),
-  listConfigs: (recon_name?: string) =>
-    get<ConfigOut[]>(`/configs${recon_name ? `?recon_name=${encodeURIComponent(recon_name)}` : ''}`),
-  editConfig: (id: number, body: { config_json: unknown; actor_id: string }) =>
-    post<ConfigOut>(`/configs/${id}/edit`, body),
-  approveConfig: (id: number, actor_id: string) => post<ConfigOut>(`/configs/${id}/approve`, { actor_id }),
+  configVersions: (id: number) => get<ConfigOut[]>(`/configs/${id}/versions`),
+  listConfigs: () => get<ConfigOut[]>('/configs'),
 
-  createRunFromSeed: (config_id: number, actor_id: string) => {
+  // runs
+  createRunFromSeed: (config_id: number) => {
     const form = new FormData()
     form.append('config_id', String(config_id))
-    form.append('actor_id', actor_id)
     form.append('use_seed', 'true')
     return request<RunOut>('/runs', { method: 'POST', body: form })
   },
-  createRunFromUpload: (config_id: number, actor_id: string, ledger: File, statement: File) => {
+  createRunFromUpload: (config_id: number, ledger: File, statement: File) => {
     const form = new FormData()
     form.append('config_id', String(config_id))
-    form.append('actor_id', actor_id)
     form.append('use_seed', 'false')
     form.append('ledger_file', ledger)
     form.append('statement_file', statement)
     return request<RunOut>('/runs', { method: 'POST', body: form })
   },
   getRun: (id: number) => get<RunOut>(`/runs/${id}`),
-  listRuns: (config_id?: number) => get<RunOut[]>(`/runs${config_id ? `?config_id=${config_id}` : ''}`),
-  reproducibilityCheck: (runId: number) =>
-    post<ReproducibilityCheckOut>(`/runs/${runId}/reproducibility-check`),
-  runBreaks: (runId: number) => get<BreakOut[]>(`/runs/${runId}/breaks`),
-  runDashboard: (runId: number) => get<DashboardOut>(`/runs/${runId}/dashboard`),
+  listRuns: () => get<RunOut[]>('/runs'),
+  reproduce: (id: number) => post<ReproducibilityCheckOut>(`/runs/${id}/reproduce`),
+  positionProof: (id: number) => get<PositionProofOut[]>(`/runs/${id}/position-proof`),
+  waterfall: (id: number) => get<PassStatOut[]>(`/runs/${id}/waterfall`),
+  runSummary: (id: number) => get<RunSummaryOut>(`/runs/${id}/summary`),
 
+  // breaks
+  analyzeBreaks: (run_id: number) => post<BreakAnalysisOut[]>('/breaks/analyze', { run_id }),
+  breaksByRun: (run_id: number, params: { status?: string; archetype?: string; regulatory_only?: boolean } = {}) => {
+    const q = new URLSearchParams()
+    if (params.status) q.set('status', params.status)
+    if (params.archetype) q.set('archetype', params.archetype)
+    if (params.regulatory_only) q.set('regulatory_only', 'true')
+    const qs = q.toString()
+    return get<BreakOut[]>(`/breaks/run/${run_id}${qs ? `?${qs}` : ''}`)
+  },
   getBreak: (id: number) => get<BreakOut>(`/breaks/${id}`),
-  adviseBreak: (id: number, actor_id: string) => post<AdviseOut>(`/breaks/${id}/advise`, { actor_id }),
-  chaserDraft: (id: number, actor_id: string) => post<ChaserOut>(`/breaks/${id}/chaser`, { actor_id }),
-  manualMatch: (id: number, actor_id: string) => post<BreakOut>(`/breaks/${id}/manual-match`, { actor_id }),
-  resolveBreak: (
-    id: number,
-    body: { actor_id: string; confirmed_archetype: string; confirmed_resolution: string },
-  ) => post<BreakOut>(`/breaks/${id}/resolve`, body),
+  regulatoryBreaks: () => get<BreakOut[]>('/breaks/regulatory'),
 
-  loopAAggregate: (runId: number) => get<LoopAAggregateGroup[]>(`/runs/${runId}/loop-a/aggregate`),
-  loopAPropose: (
-    runId: number,
-    body: { actor_id: string; field_a: string; field_b: string; type: string },
-  ) => post<LoopAProposeOut>(`/runs/${runId}/loop-a/propose`, body),
-  loopAWhatIf: (runId: number, candidate_config_id: number) =>
-    post<LoopAWhatIfOut>(`/runs/${runId}/loop-a/what-if`, { candidate_config_id }),
+  // governance
+  makerSubmit: (break_id: number, action_type: string, notes?: string) =>
+    post<MakerSubmitOut>('/governance/maker-submit', { break_id, action_type, notes }),
+  checkerApprove: (action_id: number, approved: boolean, notes?: string) =>
+    post<CheckerDecisionOut>('/governance/checker-approve', { action_id, approved, notes }),
+  pendingActions: () => get<PendingActionOut[]>('/governance/pending'),
+  auditLog: (page = 1, page_size = 100) =>
+    get<AuditLogOut[]>(`/governance/audit?page=${page}&page_size=${page_size}`),
 
+  // regulatory
+  emirNotifications: (status = 'DRAFT') => get<RegulatoryNotificationOut[]>(`/regulatory/emir?status=${status}`),
+  approveEmir: (id: number) => post<RegulatoryNotificationOut>(`/regulatory/emir/${id}/approve`),
+  cassDaily: (date: string) => get<CassReconciliationOut>(`/regulatory/cass/daily/${date}`),
+  cassResolutionPack: (date: string) => get<Record<string, unknown>>(`/regulatory/cass/resolution-pack/${date}`),
+  csdr: () => get<unknown[]>('/regulatory/csdr'),
+
+  // loops
+  loopAAggregate: (run_id: number) => get<LoopAAggregateOut>(`/runs/${run_id}/loop-a/aggregate`),
+  loopAPropose: (run_id: number) => post<LoopAProposeOutV2>(`/runs/${run_id}/loop-a/propose`),
+  loopAWhatIf: (run_id: number, candidate_config_id: number) =>
+    post<LoopAWhatIfOut>(`/runs/${run_id}/loop-a/what-if`, { candidate_config_id }),
   resolutionMemory: () => get<ResolutionMemoryOut[]>('/resolution-memory'),
 
-  auditLog: (params?: { entity_type?: string; entity_id?: string; limit?: number }) => {
-    const q = new URLSearchParams()
-    if (params?.entity_type) q.set('entity_type', params.entity_type)
-    if (params?.entity_id) q.set('entity_id', params.entity_id)
-    if (params?.limit) q.set('limit', String(params.limit))
-    const qs = q.toString()
-    return get<AuditLogOut[]>(`/audit${qs ? `?${qs}` : ''}`)
+  // client portal
+  clientUpload: (fund_id: string, recon_type: string, file: File) => {
+    const form = new FormData()
+    form.append('fund_id', fund_id)
+    form.append('recon_type', recon_type)
+    form.append('file', file)
+    return request<ClientUploadOut>('/client/upload', { method: 'POST', body: form })
   },
+  clientRecon: (run_id: number) => get<ClientReconOut>(`/client/recon/${run_id}`),
+  clientEvidence: (run_id: number) => get<EvidencePack>(`/client/evidence/${run_id}`),
 }
 
 export { ApiError }

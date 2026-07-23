@@ -3,7 +3,7 @@ import { Figure } from './Figure'
 import { statusColor } from '../theme'
 
 interface VersionChipProps {
-  version: number
+  version: number | string
   status: string
   size?: ChipProps['size']
 }

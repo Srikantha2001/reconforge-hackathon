@@ -70,14 +70,27 @@ export const theme = createTheme({
 
 export const FIGURE_FONT = '"Spline Sans Mono", ui-monospace, monospace'
 
-export const statusColor = {
-  draft: '#B4790A',
-  approved: '#2E7D46',
+export const statusColor: Record<string, string> = {
+  // config lifecycle
+  DRAFT: '#B4790A',
+  PENDING_APPROVAL: '#B4790A',
+  APPROVED: '#2E7D46',
+  SUPERSEDED: '#5B6560',
+  // break / action lifecycle
   open: '#5B6560',
-  auto_accepted: '#2E7D46',
-  routed_to_human: '#B4790A',
-  resolved: '#1F4B3F',
-} as const
+  PENDING_CHECKER_APPROVAL: '#B4790A',
+  PENDING_REGULATORY_ACTION: '#B3261E',
+  RESOLVED_STP: '#2E7D46',
+  RESOLVED_APPROVED: '#1F4B3F',
+  explained: '#5B6560',
+  PENDING: '#B4790A',
+  EXPIRED: '#5B6560',
+  REJECTED: '#B3261E',
+  // regulatory
+  FILED: '#2E7D46',
+  SHORTFALL_DETECTED: '#B3261E',
+  NIL: '#2E7D46',
+}
 
 export const severityColor = {
   low: '#2E7D46',

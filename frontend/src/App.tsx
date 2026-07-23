@@ -1,69 +1,55 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Box, Container } from '@mui/material'
-import { Sidebar } from './components/Sidebar'
-import { ConfigureStep } from './pages/ConfigureStep'
-import { RunStep } from './pages/RunStep'
-import { LoopAStep } from './pages/LoopAStep'
-import { AuditStep } from './pages/AuditStep'
+import { Sidebar, NAV_ITEMS } from './components/Sidebar'
+import { LoginPage } from './pages/LoginPage'
+import { DashboardPage } from './pages/DashboardPage'
+import { ConfigurePage } from './pages/ConfigurePage'
+import { BreaksPage } from './pages/BreaksPage'
+import { GovernancePage } from './pages/GovernancePage'
+import { LearningPage } from './pages/LearningPage'
+import { RegulatoryPage } from './pages/RegulatoryPage'
+import { ClientPortalPage } from './pages/ClientPortalPage'
+import { useAuth } from './context/AuthContext'
+import { setUnauthorizedHandler } from './api'
 import type { ConfigOut, RunOut } from './types'
 
-const STEPS = ['Configure', 'Run & breaks', 'Learning loops', 'Audit log']
+function defaultPage(role: string): string {
+  if (role === 'CLIENT') return 'client'
+  if (role === 'DSI') return 'regulatory'
+  return 'dashboard'
+}
 
 function App() {
-  const [activeStep, setActiveStep] = useState(0)
+  const { isAuthenticated, logout, role } = useAuth()
+  const [page, setPage] = useState('dashboard')
   const [config, setConfig] = useState<ConfigOut | null>(null)
   const [run, setRun] = useState<RunOut | null>(null)
 
-  // Files are uploaded once, up front in Configure (design-time: only their
-  // column names are used, to author the config) and reused as-is by Run
-  // (run-time: their full contents are matched) — no re-upload needed.
-  const [useSeed, setUseSeed] = useState(true)
-  const [sourceFile, setSourceFile] = useState<File | null>(null)
-  const [targetFile, setTargetFile] = useState<File | null>(null)
+  useEffect(() => setUnauthorizedHandler(logout), [logout])
+  useEffect(() => {
+    if (role) setPage(defaultPage(role))
+  }, [role])
 
-  const maxStep = run ? 3 : config?.status === 'approved' ? 1 : 0
+  if (!isAuthenticated) return <LoginPage />
+
+  // Guard: if the current page isn't allowed for the role, fall back.
+  const allowed = NAV_ITEMS.find((i) => i.key === page && role && i.roles.includes(role))
+  const activePage = allowed ? page : defaultPage(role ?? '')
 
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default', display: 'flex' }}>
-      <Sidebar steps={STEPS} activeStep={activeStep} maxStep={maxStep} onSelect={setActiveStep} />
+      <Sidebar active={activePage} onSelect={setPage} />
       <Box sx={{ flexGrow: 1, minWidth: 0 }}>
         <Container maxWidth="lg" sx={{ py: 4 }}>
-          {activeStep === 0 && (
-            <ConfigureStep
-              config={config}
-              onConfigChange={setConfig}
-              onApproved={() => setActiveStep(1)}
-              useSeed={useSeed}
-              onUseSeedChange={setUseSeed}
-              sourceFile={sourceFile}
-              onSourceFileChange={setSourceFile}
-              targetFile={targetFile}
-              onTargetFileChange={setTargetFile}
-            />
+          {activePage === 'dashboard' && (
+            <DashboardPage config={config} run={run} onRun={setRun} onGoConfigure={() => setPage('configure')} />
           )}
-
-          {activeStep === 1 && config && (
-            <RunStep
-              config={config}
-              run={run}
-              useSeed={useSeed}
-              sourceFile={sourceFile}
-              targetFile={targetFile}
-              onRunCreated={setRun}
-            />
-          )}
-
-          {activeStep === 2 && run && (
-            <LoopAStep
-              run={run}
-              onNewRun={(newRun, newConfig) => {
-                setConfig(newConfig)
-                setRun(newRun)
-              }}
-            />
-          )}
-
-          {activeStep === 3 && <AuditStep />}
+          {activePage === 'configure' && <ConfigurePage config={config} onConfigApproved={setConfig} />}
+          {activePage === 'breaks' && <BreaksPage run={run} />}
+          {activePage === 'governance' && <GovernancePage run={run} />}
+          {activePage === 'learning' && <LearningPage run={run} onNewConfig={setConfig} />}
+          {activePage === 'regulatory' && <RegulatoryPage />}
+          {activePage === 'client' && <ClientPortalPage />}
         </Container>
       </Box>
     </Box>
