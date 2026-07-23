@@ -6,9 +6,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .auth import seed_demo_users
 from .config import get_settings
-from .db import init_db
-from .routers import actors, audit, breaks, configs, loops, runs, seed
+from .db import SessionLocal, init_db
+from .routers import audit, auth, breaks, client, configs, governance, loops, regulatory, runs, seed
 
 settings = get_settings()
 
@@ -16,6 +17,12 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Seed the five demo users (idempotent).
+    db = SessionLocal()
+    try:
+        seed_demo_users(db)
+    finally:
+        db.close()
     yield
 
 
@@ -43,10 +50,13 @@ def health():
     return {"status": "ok", "llm_provider": settings.llm_provider}
 
 
-app.include_router(actors.router)
+app.include_router(auth.router)
 app.include_router(configs.router)
 app.include_router(runs.router)
 app.include_router(breaks.router)
+app.include_router(governance.router)
+app.include_router(regulatory.router)
+app.include_router(client.router)
 app.include_router(loops.router)
 app.include_router(audit.router)
 app.include_router(seed.router)

@@ -1,390 +1,225 @@
-# ReconForge
+# ReconOS
 
-> Author any reconciliation from natural language in minutes, run it with
-> control-grade determinism, and resolve breaks with agents that explain
-> themselves, refuse to guess, and get smarter from every human action.
+> Deutsche Bank Securities Services' AI-native reconciliation fabric —
+> deterministic matching, regulatory automation, and client-facing intelligence.
 
-**The core law:** the LLM *authors configuration (rules) at design-time* and
-*advises on breaks post-run*. It **never** matches transactions — matching is
-done only by a deterministic Python engine. This buys auditability (a versioned
-rule is explainable), determinism (same input → identical output hash), and cost
-(author a rule once, not one inference per transaction).
+**The core law:** the LLM *authors configuration at design-time* and *advises on
+breaks post-run*. It **never** matches transactions — matching is done only by a
+deterministic Python/pandas engine. Same input → identical SHA-256 output hash,
+every run. That is a financial control, not a software feature.
 
-## Architecture (four planes)
+## Architecture — four planes
 
-| Plane | What happens |
-|---|---|
-| **Design-time** | NL + 2 CSVs → LLM → schema-validated config JSON → **human approval gate** → versioned persist |
-| **Run-time** | Deterministic engine: transforms → key match → rule eval → matched pairs + breaks; reproducibility hash |
-| **Resolution** | SME agent classifies each break (1 of 10 archetypes) → Judge agent (accept / route-to-human); chaser draft (never auto-sent) |
-| **Learning** | Loop A: manual matches → aggregated deltas → proposed config change → **human approval** → new version. Loop B: resolution memory (retrieve similar → few-shot / short-circuit) |
+```
+ ┌───────────────────────────────────────────────────────────────────────┐
+ │ DESIGN-TIME   NL description ──▶ LLM ──▶ schema-validated config JSON │
+ │               (repair-on-fail is deterministic; maker ─▶ checker gate)│
+ ├───────────────────────────────────────────────────────────────────────┤
+ │ RUN-TIME      transforms ─▶ position proof ─▶ 7-pass matching         │
+ │               waterfall (exact → date-tol → qty-round → fx-round →    │
+ │               1:N → N:1 → N:M subset-sum) ─▶ breaks ─▶ SHA-256 hash   │
+ ├───────────────────────────────────────────────────────────────────────┤
+ │ RESOLUTION    SME classifier (12 archetypes, 9 causal origins,        │
+ │               3-layer root-cause tree) ─▶ Judge routing bands:        │
+ │               <0.65 senior · <0.90 maker · ≥0.90 STP · regulatory     │
+ │               always escalates ─▶ maker-checker governance ─▶         │
+ │               export-only journal entries                             │
+ ├───────────────────────────────────────────────────────────────────────┤
+ │ LEARNING      Loop A: 4+ force-matches with one systemic drift ─▶     │
+ │               proposed config re-version (DATE_TOLERANCE capped at 5d,│
+ │               what-if preview, checker approves, old vers. SUPERSEDED)│
+ │               Loop B: resolution memory recalled as few-shot          │
+ └───────────────────────────────────────────────────────────────────────┘
+```
 
-Both entry points into the versioned config (initial authoring, Loop A
-refinement) pass through the **same human maker-checker gate** — the maker cannot
-self-approve.
+Regulatory rides on top: **EMIR Article 15** (breaks > €15M unresolved > 15
+business days → draft notification, human-filed), **CASS 7A** (daily client-money
+safeguarding recon with hashed resolution packs), CSDR (placeholder). A **client
+portal** lets a fund upload its own positions, reconcile against the bank's
+books, and download a hash-stamped evidence pack.
 
 ## Stack
 
-- **Frontend:** React + MUI (Vite), TypeScript
-- **Backend:** FastAPI + a pure-function pandas engine, SQLAlchemy
-- **LLM:** provider-agnostic and pluggable (`stub` default needs no key; `gemini`
-  and `openai`-compatible adapters included)
-- **Storage:** Postgres (via docker-compose); the ORM also runs on SQLite for tests
-- **Deploy (local):** Docker Compose for Postgres + backend; Vite dev server for the frontend
+- **Backend:** Python 3.11 (Docker) / 3.9+ (host), FastAPI, pandas, SQLAlchemy, **SQLite**
+- **Frontend:** React 18 + TypeScript + Vite + MUI
+- **Auth:** JWT (PyJWT + bcrypt), five seeded demo roles
+- **LLM:** pluggable — `stub` (default, deterministic, fully offline), `gemini`, `openai`-compatible
 
----
+No API key is needed for anything: `LLM_PROVIDER=stub` implements every
+LLM-shaped step deterministically, which is also what the reproducibility tests
+rely on.
 
-## Prerequisites
-
-| Tool | Verified version | Notes |
-|---|---|---|
-| **Docker Desktop** (with Compose v2) | Docker 29.x, Compose v5.x | Needed for the Postgres + backend path. Must be *running* before `docker compose up`. |
-| **Node.js** | v20+ (verified on v26.5.0) | Needed for the frontend. `npm` ships with it. |
-| **Python** | 3.11+ for the Docker image; 3.9+ works for running the backend directly on the host (verified on 3.9.6) | Only needed if you want to run the backend without Docker, or run the test suite locally. |
-
-macOS note: if `node`/`npm` aren't installed, `brew install node` gets you the
-versions above. If Docker Desktop is installed but not running, `open -a Docker`
-starts it (wait a few seconds, then `docker info` should succeed).
-
-You do **not** need an LLM API key to run anything — the default
-`LLM_PROVIDER=stub` is a deterministic, fully-offline implementation of every
-LLM-shaped step (authoring, summarizing, break explanations, Loop A proposals).
-It's also what the reproducibility tests rely on.
-
----
-
-## Local setup — recommended path (Docker Compose + Vite)
-
-This is the path actually exercised end-to-end for this project: Postgres and
-the backend run in Docker, the frontend runs on the host via Vite (fast
-hot-reload, and it proxies `/api` to the backend so there's no CORS to think
-about).
-
-### 1. Clone / open the repo and configure environment
+## Quick start
 
 ```bash
-cd /path/to/hackathon
-cp .env.example .env      # defaults work out of the box (LLM_PROVIDER=stub)
+git clone <repo> && cd hackathon
 ```
-
-All configuration lives in this one `.env` file (see [Configuration
-reference](#configuration-reference) below). You almost never need to change
-anything for a local run.
-
-### 2. Start Postgres + backend
-
+```bash
+cp .env.example .env
+```
 ```bash
 docker compose up -d --build
 ```
-
-What this does:
-- Builds the backend image on **Python 3.11-slim**, installs `backend/requirements.txt`.
-- Starts a `postgres:16-alpine` container and waits for its healthcheck.
-- Generates the seed data (`ledger.csv` / `statement.csv` + a pre-approved
-  fallback config) **at image build time**, so the app has a rehearsed pair
-  ready immediately — this is also the self-check that guarantees all 10 break
-  archetypes + the 3-day drift cluster are present (build fails loudly if not).
-- Starts the FastAPI backend on **http://localhost:8000**.
-
-Verify both containers are up and healthy:
-
 ```bash
-docker compose ps
-# NAME                 STATUS
-# reconforge-backend   Up
-# reconforge-db        Up (healthy)
-
-curl -s http://localhost:8000/api/health
-# {"status":"ok","llm_provider":"stub"}
+npm --prefix frontend install
+```
+```bash
+npm --prefix frontend run dev
 ```
 
-If something looks wrong, tail the logs:
+Open **http://localhost:5173**. The backend is at http://localhost:8000
+(interactive API docs: **http://localhost:8000/docs**). Optionally add a
+`GEMINI_API_KEY` + `LLM_PROVIDER=gemini` to `.env` for live LLM prose — nothing
+else changes.
 
-```bash
-docker compose logs backend --tail 50
-docker compose logs db --tail 50
-```
+## Demo users
 
-### 3. Start the frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-This starts Vite on **http://localhost:5173**. Open that URL in a browser.
-`vite.config.ts` proxies any `/api/*` request to `http://localhost:8000`, so
-the frontend and backend can be developed independently without CORS
-configuration getting in the way.
-
-### 4. Walk through the app
-
-Open **http://localhost:5173**. The UI is a 5-step flow:
-
-1. **Configure** — type a description (a sensible default is pre-filled), click
-   **Author config**. The LLM (stub, by default) authors a schema-validated
-   config against the seed CSV's real column headers; review the generated
-   rules and English summary, then **Approve** — note the app will refuse to
-   let the same "acting as" actor both author and approve (switch the actor
-   in the top-right selector to approve).
-2. **Run** — toggle "use rehearsed seeded pair" (on by default) or upload your
-   own two CSVs, then **Run reconciliation**. You'll see the match rate, a
-   split matched/unmatched bar, and the output hash. Click **Verify
-   reproducibility** to re-run the engine on the same inputs and confirm the
-   hash matches — the control, not a guess.
-3. **Breaks** — inspect any break: row-by-row diff, deterministic archetype +
-   explanation, **Advise** (runs the SME + Judge agents), **Draft chaser**
-   (read-only, never sent), **Manual match** (feeds Loop A), **Resolve** (feeds
-   Loop B / resolution memory).
-4. **Learning loops** — after manually matching a few of the drift-cluster
-   breaks (`DRF0001`–`DRF0005`, which disagree only on value date by exactly 3
-   days), this page aggregates the pattern and lets you **Propose a config
-   change** (widening the date tolerance), **Preview what-if** (shows the
-   projected match-rate jump *before* approving), then **Approve & re-run**
-   through the same maker-checker gate.
-5. **Audit log** — every action: actor, agent confidence, before/after state,
-   and agent reasoning.
-
----
-
-## Local setup — without Docker (backend on the host)
-
-Useful for backend development/debugging without rebuilding the Docker image
-each time.
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-Pick a database. Either point at the Postgres container (start it alone with
-`docker compose up -d db` from the repo root), or use SQLite for a
-zero-dependency local run:
-
-```bash
-# Option A: SQLite (simplest, no Postgres needed)
-export DATABASE_URL="sqlite+pysqlite:///./data/reconforge.db"
-
-# Option B: Postgres (e.g. the docker-compose db, started separately)
-export DATABASE_URL="postgresql+psycopg2://reconforge:reconforge@localhost:5432/reconforge"
-```
-
-Generate the seed data (idempotent — safe to re-run):
-
-```bash
-python -m app.seed.generator --out ./data
-# Seed written to data: 75 ledger rows, 75 statement rows.
-# All 10 break archetypes + 3-day drift cluster verified present.
-```
-
-Start the API with auto-reload:
-
-```bash
-uvicorn app.main:app --reload
-# http://localhost:8000, docs at http://localhost:8000/docs
-```
-
-Then start the frontend exactly as in step 3 above (`cd frontend && npm install && npm run dev`).
-
-> **macOS + Python 3.9 note:** if `pip install -r requirements.txt` fails
-> building `psycopg2-binary`, it's almost always a missing prebuilt wheel for
-> your exact Python/arch combo. `requirements.txt` is already pinned to a
-> version (`2.9.12`) verified to have wheels for Python 3.9 on macOS arm64; if
-> you hit this on a different platform, bump the psycopg2-binary version or run
-> `pip install --only-binary :all: psycopg2-binary` to see what's available.
-
----
-
-## Verifying everything works (no UI needed)
-
-A scripted smoke test of the whole CORE + Loops flow, using `curl`:
-
-```bash
-# 1. Health + actors
-curl -s http://localhost:8000/api/health
-curl -s http://localhost:8000/api/actors
-
-# 2. Seed data is present
-curl -s http://localhost:8000/api/seed/info
-
-# 3. Author a config (as alice)
-curl -s -X POST http://localhost:8000/api/configs/author \
-  -H "Content-Type: application/json" \
-  -d '{
-    "nl_description": "Match ledger to statement exactly on trade id, amount tolerance of 0.01, within 2 days for value date, and account must match exactly",
-    "actor_id": "alice",
-    "columns_a": ["trade_id","amount","ccy","value_date","account","counterparty"],
-    "columns_b": ["ref","amount","ccy","value_date","account","description"]
-  }'
-# -> note the returned "id"
-
-# 4. Approve as bob (a maker cannot self-approve)
-curl -s -X POST http://localhost:8000/api/configs/<id>/approve \
-  -H "Content-Type: application/json" -d '{"actor_id": "bob"}'
-
-# 5. Run on the seeded pair
-curl -s -X POST http://localhost:8000/api/runs \
-  -F "config_id=<id>" -F "actor_id=alice" -F "use_seed=true"
-# -> note the returned run "id"
-
-# 6. Reproducibility check
-curl -s -X POST http://localhost:8000/api/runs/<run_id>/reproducibility-check
-# -> {"reproducible": true, ...}
-```
-
-Full interactive API docs (Swagger UI) are always available at
-**http://localhost:8000/docs** while the backend is running.
-
----
-
-## Running tests
-
-### Backend (pytest)
-
-```bash
-cd backend
-pip install -r requirements.txt   # if not already installed
-pytest -q
-# 44 passed
-```
-
-Covers: config schema validation + deterministic repair-on-fail, the
-deterministic engine (matching, transforms, archetype classification,
-reproducibility hash equality), the seed generator (all 10 archetypes + drift
-cluster present, reproducible), and a full sequential API workflow test
-(author → approve gate → run → advise → manual match → Loop A propose/what-if/
-approve → re-run → Loop B resolve → audit trail). Tests use an isolated SQLite
-file (`backend/tests/test_reconforge.db`, recreated each session) and the
-`stub` LLM provider — no network or API key required.
-
-### Frontend (typecheck + build)
-
-```bash
-cd frontend
-npm install    # if not already installed
-npm run build  # tsc -b && vite build
-```
-
-A clean build (`tsc -b`) is the frontend's correctness check — there is no
-separate frontend test suite in this build.
-
----
-
-## Configuration reference
-
-Everything is centralized in `.env` (copy from `.env.example`). Key variables:
-
-| Variable | Default | Purpose |
+| Email | Password | Role |
 |---|---|---|
-| `DATABASE_URL` | `postgresql+psycopg2://reconforge:reconforge@localhost:5432/reconforge` | Full SQLAlchemy URL; overrides the `POSTGRES_*` parts below if set. Use a `sqlite+pysqlite:///...` URL for a zero-dependency local run. |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST` / `POSTGRES_PORT` | `reconforge` / `reconforge` / `reconforge` / `localhost` / `5432` | Used by docker-compose to configure the Postgres container. |
-| `LLM_PROVIDER` | `stub` | `stub` (deterministic, offline), `gemini` (needs `GEMINI_API_KEY`), or `openai` (needs `OPENAI_API_KEY`, optionally `OPENAI_BASE_URL` for any OpenAI-compatible gateway). Falls back to `stub` automatically if the required key is missing or the provider errors. |
-| `LLM_MODEL` | *(unset → provider default)* | Optional model name override, e.g. `gemini-1.5-flash` or `gpt-4o-mini`. |
-| `GEMINI_API_KEY` / `OPENAI_API_KEY` / `OPENAI_BASE_URL` | *(empty)* | Only needed if you switch `LLM_PROVIDER` away from `stub`. |
-| `STP_THRESHOLD` | `0.90` | Autonomy dial: Judge confidence ≥ threshold auto-accepts a break; below it, routes to a human. |
-| `UPLOAD_DIR` | `./uploads` | Where uploaded CSV pairs are stored (path recorded on the `run` row). |
-| `FRONTEND_ORIGIN` | `http://localhost:5173` | Allowed CORS origin for the backend (only relevant if you bypass the Vite proxy). |
+| `maker@db.com` | `maker123` | MAKER |
+| `checker@db.com` | `checker123` | CHECKER |
+| `admin@db.com` | `admin123` | ADMIN |
+| `client@alphacapital.com` | `client123` | CLIENT |
+| `dsi@db.com` | `dsi123` | DSI |
 
-To try a real LLM provider instead of the stub:
+## Demo walkthrough (8 steps)
+
+The seeded dataset is 25 IBOR positions vs 21 BNY Mellon custody records,
+engineered so every waterfall pass and break archetype fires.
+
+1. **Sign in as maker** (`maker@db.com`) → Configure → **Author new config** →
+   **Submit for approval**. (Offline authoring instantiates the pre-approved
+   securities recon; every config is schema-validated with deterministic repair.)
+2. **Sign in as checker** → Configure → **Approve**. The maker cannot
+   self-approve — enforced at the API *and* by a DB constraint.
+3. As **maker**, Dashboard → **Execute on seed**: 14 matched across 7 passes
+   (5·2·1·1·1·2·2), 9 open breaks, position proof **PROVED**
+   (2,747,000 + 250,300 = 2,997,300, variance 0), 1 regulatory flag.
+4. Run & breaks → **Analyze breaks (SME + Judge)**: every break gets an
+   archetype, causal origin, and a 3-layer root-cause tree. TRD022 (a €16.5M
+   valuation dispute, 300k delta) routes to **Regulatory escalation** regardless
+   of confidence; the missing leg escalates to a senior; the drift cluster goes
+   to maker review.
+5. **Force-match the four drift breaks** (TRD008–011) from the break drilldown;
+   approve each as checker in Governance. Each approval writes an export-only
+   journal entry with a SHA-256 audit reference — never auto-posted.
+6. Learning → **Loop A detects** "4× settlement-date drift of 3 days" →
+   **Propose config change** → what-if preview shows the candidate match rate
+   improving with zero newly-broken keys → checker approves → v1.1.0 is born and
+   v1.0.0 is SUPERSEDED. (The proposal engine caps DATE_TOLERANCE at 5 days.)
+7. As **checker**, Regulatory: the EMIR tab holds the drafted Article-15
+   notification (approve → FILED, audited); the CASS tab shows the ACC002
+   €5,000 shortfall with a downloadable, hash-stamped resolution pack. As
+   **client**, upload a position CSV in the portal → simplified results →
+   evidence pack with a stable `document_hash`.
+8. **The moment that matters:** back on the Dashboard, click **Reproduce**.
+   Watch the SHA-256 match: *"Same input, same output, every time. Not because
+   we got lucky — because the engine has no randomness. That is what a
+   financial control looks like."*
+
+## Reproducibility test
 
 ```bash
-# in .env
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=your-key-here
-# then:
-docker compose up -d --build backend   # or restart uvicorn if running on the host
+cd backend && .venv/bin/python tests/test_reproducibility.py
 ```
 
-Every LLM output (config authoring, Loop A proposals) is still validated
-against the frozen schema with repair-on-fail before it's trusted — switching
-providers never bypasses that gate.
+Prints the run summary and `REPRODUCIBILITY: PASS` with the SHA-256 hash (also
+verified inside the container — identical hash across host and Docker).
 
----
-
-## Stopping / cleaning up
+## Tests
 
 ```bash
-docker compose down          # stop Postgres + backend containers
-docker compose down -v       # also delete the Postgres data volume (full reset)
+cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+```
+```bash
+cd backend && .venv/bin/python -m pytest tests/ -q     # 124 passed
 ```
 
-The frontend dev server stops with `Ctrl+C` in its terminal (or via whatever
-process manager started it).
+Suites: config schema v2 (validation + deterministic repair), engine (waterfall
+scenario table + reproducibility), seed integrity, auth/roles, governance
+(maker≠checker at API and DB, write-off ceilings, expiry), regulatory
+(EMIR/CASS), agents (classifier, routing bands, Loop A caps), and a 20-step
+end-to-end API workflow including the client portal.
 
----
+```bash
+npm --prefix frontend run build                        # type-check + build
+```
+
+## Architecture decisions
+
+- **Why the LLM never matches at runtime** — matching must be auditable,
+  reproducible, and cheap. A versioned rule is explainable; one inference per
+  transaction is none of those things. The LLM's output is always forced
+  through JSON-schema validation with *deterministic* repair — never "ask the
+  model to fix it".
+- **Why SHA-256 over canonical output** — amounts are formatted `"{:.2f}"` and
+  quantities `"{:.6f}"` before hashing, and match records are sorted, so
+  float noise and iteration order can never change the hash. Reproducibility
+  becomes a one-click control.
+- **Why maker-checker everywhere** — configs, break resolutions, Loop A
+  re-versions, and EMIR filings all pass the same gate; `maker != checker` is a
+  database CheckConstraint, not just UI. Journal entries are export-only;
+  audit log and match ledger are append-only.
+- **Why the autonomy dial** — the Judge's bands are enforced in code (an LLM may
+  recommend; code decides): below 0.65 the SME *refuses to classify* and a
+  senior reviews; 0.90+ resolves straight-through into resolution memory; a
+  regulatory flag overrides everything.
+
+## Regulatory features
+
+- **EMIR Article 15** — every run screens breaks (EUR-converted via fx_rates);
+  qualifying disputes flag the break, draft a notification for the competent
+  authority, and wait for a CHECKER/DSI to file. Nothing is auto-filed.
+- **CASS 7A** — daily client-liability vs safeguarded-funds reconciliation per
+  account; shortfalls above €1,000 escalate, and every day yields a
+  deterministic, hash-stamped resolution pack.
+- **Evidence packs** — client-facing recon results carry a `document_hash` over
+  the reconciliation facts, so a pack can be re-requested and verified byte-for-byte.
+
+## Competitive position
+
+AutoRek, Duco, and SmartStream automate matching. ReconOS additionally makes the
+matching *provably deterministic* (one-click hash reproduction), explains every
+break with a three-layer root-cause tree instead of a code, learns new
+tolerances only through a human-approved what-if loop, files nothing to a
+regulator without a named approver, and hands clients a self-service portal with
+tamper-evident results — while the LLM stays where it belongs: authoring rules
+and prose, never touching a transaction.
 
 ## Project structure
 
 ```
-.
-├── .env.example              # centralized config template (copy to .env)
-├── docker-compose.yml        # Postgres + backend, for local Docker runs
-├── backend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── app/
-│       ├── main.py           # FastAPI app, CORS, router wiring
-│       ├── config.py         # centralized Settings (reads .env)
-│       ├── config_schema.py  # frozen JSON Schema + repair-on-fail validator
-│       ├── models.py         # six-table SQLAlchemy model
-│       ├── db.py             # engine/session setup (Postgres or SQLite)
-│       ├── actors.py         # seeded maker-checker identities
-│       ├── services.py       # orchestration: runs, advise, Loop A/B, audit
-│       ├── engine/           # pure deterministic matching engine
-│       │   ├── runner.py     # transforms -> key match -> rule eval -> hash
-│       │   ├── matching.py   # rule evaluation (exact/tolerance types)
-│       │   ├── archetype.py  # deterministic break classifier (no-LLM fallback)
-│       │   ├── transforms.py
-│       │   └── hashing.py    # canonical reproducibility hash
-│       ├── llm/               # pluggable LLM provider interface
-│       │   ├── base.py       # abstract interface
-│       │   ├── stub.py       # deterministic, no-key default
-│       │   ├── gemini.py
-│       │   └── openai_compat.py
-│       ├── seed/generator.py # seed data with all 10 archetypes + drift cluster
-│       └── routers/          # FastAPI route modules (configs, runs, breaks, loops, audit, ...)
-├── frontend/
-│   └── src/
-│       ├── App.tsx           # stepper orchestrating the 5-step flow
-│       ├── api.ts            # typed fetch client for the backend
-│       ├── theme.ts          # MUI theme (design system)
-│       ├── context/ActorContext.tsx
-│       ├── components/       # VersionChip, SplitMatchedBar, DoubleRuleTotal, ...
-│       └── pages/             # ConfigureStep, RunStep, BreaksStep, LoopAStep, AuditStep
-└── README.md
+backend/
+  app/
+    engine/            # deterministic core: transforms, business days, position
+                       # proof, subset-sum, 7-pass waterfall, classifier, hashing
+    llm/               # pluggable providers (stub default, gemini, openai-compat)
+    routers/           # auth, configs, runs, breaks, governance, regulatory,
+                       # loops, client portal, audit, seed
+    agents.py          # SME analysis, Judge routing bands, Loop A proposals
+    services_run.py    # run orchestration: execute → persist → screen → analyze
+    services_governance.py / services_regulatory.py
+    seed/generator.py  # 25-row IBOR vs 21-row custody dataset + 6 aux files
+  tests/               # 124 tests incl. the standalone reproducibility runner
+frontend/
+  src/pages/           # Dashboard, Configure, Breaks, Governance, Learning,
+                       # Regulatory, ClientPortal (+ role-based sidebar)
+docs/                  # RECONOS_UPGRADE_PLAN.md, HANDOVER.md
+AGENTS.md              # working agreement for AI agents in this repo
 ```
 
----
+## Configuration
 
-## The frozen config contract
+Everything lives in `.env` (see `.env.example`): `DATABASE_URL` (SQLite),
+`LLM_PROVIDER`/`GEMINI_API_KEY`, `SECRET_KEY`, `STP_THRESHOLD`, write-off and
+EMIR/CASS thresholds, and subset-sum performance guards. Docker Compose passes
+all of them through.
 
-```json
-{
-  "recon_name": "Nostro_USD_Daily",
-  "source_a": { "alias": "ledger", "key_columns": ["trade_id"] },
-  "source_b": { "alias": "statement", "key_columns": ["ref"] },
-  "transforms": [{ "field": "amount", "op": "abs" }, { "field": "ccy", "op": "upper" }],
-  "match_rules": [
-    { "field_a": "trade_id", "field_b": "ref", "type": "exact" },
-    { "field_a": "amount", "field_b": "amount", "type": "numeric_tolerance", "tolerance": 0.01 },
-    { "field_a": "value_date", "field_b": "value_date", "type": "date_tolerance", "tolerance_days": 2 }
-  ]
-}
+## Stopping
+
+```bash
+docker compose down        # keep the SQLite volume
 ```
-
-- **Match types:** `exact`, `numeric_tolerance` (needs `tolerance`), `date_tolerance` (needs `tolerance_days`)
-- **Transform ops:** `abs`, `upper`, `lower`, `strip`, `round2` (optional `side`: `a` | `b` | `both`)
-- Every LLM output is validated against this schema with deterministic
-  **repair-on-fail**, then hard-fails if still invalid.
-
-## The 10 break archetypes
-
-value-date mismatch · FX rounding · partial fill · duplicate entry · fee/charge
-difference · timing/settlement lag · wrong account/reference · missing
-counterparty leg · amount outside tolerance · reference/ID format mismatch.
-
-The seed data contains at least one of each plus a 3-day settlement-drift cluster
-so Loop A has a systemic signal to discover.
+```bash
+docker compose down -v     # destroy it (fresh DB next start)
+```

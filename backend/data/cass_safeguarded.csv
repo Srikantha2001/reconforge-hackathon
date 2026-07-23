@@ -1,0 +1,4 @@
+client_account,fund_id,client_liability_eur,safeguarded_amount_eur,currency,reconciliation_date
+ACC001,FUND_A,2500000.00,2500000.00,EUR,2024-01-15
+ACC002,FUND_B,5000000.00,4995000.00,EUR,2024-01-15
+ACC003,FUND_C,1800000.00,1800000.00,EUR,2024-01-15

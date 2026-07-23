@@ -164,6 +164,20 @@ class StubProvider(LLMProvider):
         }
 
     def summarize_config(self, config: Dict[str, Any]) -> str:
+        # v2 config shape (sources[] + matching_waterfall[]). Older v1 configs
+        # (source_a/source_b/match_rules) are still summarized for compatibility.
+        if "matching_waterfall" in config:
+            sources = config.get("sources", [])
+            aliases = " and ".join(s.get("alias", s.get("side", "?")) for s in sources)
+            passes = config.get("matching_waterfall", [])
+            pass_names = "; ".join(f"pass {p.get('pass')}: {p.get('name')}" for p in passes)
+            reg = config.get("regulatory_config", {}) or {}
+            reg_bits = [k.upper() for k in ("emir", "cass") if reg.get(k, {}).get("enabled")]
+            return (
+                f"'{config['recon_name']}' ({config.get('recon_type', 'POSITION')}, v{config.get('version')}) "
+                f"reconciles {aliases} through a {len(passes)}-pass waterfall — {pass_names}. "
+                + (f"Regulatory: {', '.join(reg_bits)}." if reg_bits else "")
+            )
         a, b = config["source_a"], config["source_b"]
         lines = [
             f"'{config['recon_name']}' matches '{a['alias']}' rows to '{b['alias']}' rows by "

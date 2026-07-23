@@ -1,0 +1,14 @@
+date,market,description
+2024-01-01,TARGET2,New Year's Day
+2024-03-29,TARGET2,Good Friday
+2024-04-01,TARGET2,Easter Monday
+2024-05-01,TARGET2,Labour Day
+2024-12-25,TARGET2,Christmas Day
+2024-12-26,TARGET2,Boxing Day
+2024-01-01,LSE,New Year's Day
+2024-03-29,LSE,Good Friday
+2024-04-01,LSE,Easter Monday
+2024-05-06,LSE,Early May Bank Holiday
+2024-08-26,LSE,Summer Bank Holiday
+2024-12-25,LSE,Christmas Day
+2024-12-26,LSE,Boxing Day

@@ -1,158 +1,209 @@
-"""Deterministic engine: transforms -> key match -> rule eval, and the
-reproducibility contract (§2 law 4: same input -> identical output hash)."""
+"""ReconOS engine v2 acceptance suite (P3 — docs/RECONOS_UPGRADE_PLAN.md §4).
+
+Asserts the 7-pass waterfall resolves the seed exactly as the spec maps it,
+that every break scenario surfaces, that TRD024 is a corporate-action explained
+break, and that the run is reproducible (identical output hash).
+"""
 import pandas as pd
 import pytest
 
+from app.engine.business_days import business_day_diff
+from app.engine.hashing import assign_row_ids
+from app.engine.matching import MatchingWaterfall
+from app.engine.subset_sum import SubsetSumMatcher
+from app.engine.transforms import TransformPipeline
 from app.engine.runner import reconcile
-
-CONFIG = {
-    "recon_name": "Test",
-    "source_a": {"alias": "ledger", "key_columns": ["trade_id"]},
-    "source_b": {"alias": "statement", "key_columns": ["ref"]},
-    "transforms": [{"field": "amount", "op": "abs"}, {"field": "ccy", "op": "upper"}],
-    "match_rules": [
-        {"field_a": "trade_id", "field_b": "ref", "type": "exact"},
-        {"field_a": "amount", "field_b": "amount", "type": "numeric_tolerance", "tolerance": 0.01},
-        {"field_a": "value_date", "field_b": "value_date", "type": "date_tolerance", "tolerance_days": 2},
-    ],
-}
+from app.seed.generator import generate, load_aux
 
 
-def _basic_frames():
-    df_a = pd.DataFrame(
-        [
-            {"trade_id": "T1", "amount": 100.00, "ccy": "usd", "value_date": "2026-07-01"},
-            {"trade_id": "T2", "amount": -50.00, "ccy": "USD", "value_date": "2026-07-02"},
-            {"trade_id": "T3", "amount": 200.00, "ccy": "USD", "value_date": "2026-07-05"},
-        ]
-    )
-    df_b = pd.DataFrame(
-        [
-            {"ref": "T1", "amount": 100.005, "ccy": "USD", "value_date": "2026-07-01"},
-            {"ref": "T2", "amount": 50.00, "ccy": "USD", "value_date": "2026-07-04"},
-            {"ref": "T4", "amount": 999.00, "ccy": "USD", "value_date": "2026-07-05"},
-        ]
-    )
-    return df_a, df_b
+@pytest.fixture(scope="module")
+def result():
+    df_a, df_b, cfg = generate()
+    return reconcile(df_a, df_b, cfg, aux_data=load_aux())
 
 
-def test_clean_and_tolerance_matches():
-    df_a, df_b = _basic_frames()
-    result = reconcile(df_a, df_b, CONFIG)
-    matched_keys = {m["key"] for m in result.matched}
-    assert matched_keys == {"T1", "T2"}
-    assert result.matched_count == 2
+# --- Waterfall: each pass matches its intended fixtures ---------------------
+
+def _isins_at_pass(result, pass_no):
+    return {m["isin"] for m in result.matches if m["pass_number"] == pass_no}
 
 
-def test_transform_abs_normalizes_sign():
-    # T2 ledger amount is -50, statement is +50 — only matches because of abs().
-    df_a, df_b = _basic_frames()
-    result = reconcile(df_a, df_b, CONFIG)
-    assert any(m["key"] == "T2" for m in result.matched)
+def test_pass_match_counts(result):
+    counts = {p["pass_number"]: p["matched_count"] for p in result.pass_stats}
+    assert counts == {1: 5, 2: 2, 3: 1, 4: 1, 5: 1, 6: 2, 7: 2}
+    assert result.matched_count == 14
 
 
-def test_one_sided_breaks_for_unmatched_keys():
-    df_a, df_b = _basic_frames()
-    result = reconcile(df_a, df_b, CONFIG)
-    sides = {b["break_key"]: b["side"] for b in result.breaks}
-    assert sides["T3"] == "one_sided_a"
-    assert sides["T4"] == "one_sided_b"
+def test_pass_1_exact_matches(result):
+    assert _isins_at_pass(result, 1) == {
+        "GB00B0YTLJ59", "US0378331005", "DE0005140008", "FR0000131104", "NL0010273215",
+    }
 
 
-def test_reproducibility_identical_hash_same_input():
-    df_a, df_b = _basic_frames()
-    r1 = reconcile(df_a, df_b, CONFIG)
-    r2 = reconcile(df_a, df_b, CONFIG)
+def test_pass_2_date_tolerance(result):
+    assert _isins_at_pass(result, 2) == {"GB00B1YW4409", "US5949181045"}
+
+
+def test_pass_3_quantity_rounding(result):
+    assert _isins_at_pass(result, 3) == {"JP3633400001"}  # TRD012, 50000 vs 49999
+
+
+def test_pass_4_price_rounding(result):
+    assert _isins_at_pass(result, 4) == {"US88160R1014"}  # TRD013, 245.67 vs 245.68
+
+
+def test_pass_5_one_to_many(result):
+    m = next(m for m in result.matches if m["pass_number"] == 5)
+    assert m["isin"] == "GB00BH4HKS39"
+    assert len(m["row_ids_a"]) == 1 and len(m["row_ids_b"]) == 2  # TRD014 -> 2 custody legs
+    assert m["quantity_a"] == 30000 and m["quantity_b"] == 30000
+
+
+def test_pass_6_many_to_one(result):
+    m = next(m for m in result.matches if m["pass_number"] == 6)
+    assert m["isin"] == "US4592001014"
+    assert len(m["row_ids_a"]) == 2 and len(m["row_ids_b"]) == 1  # TRD015+016 -> 1
+    assert m["quantity_a"] == 16000
+
+
+def test_pass_7_subset_sum(result):
+    m = next(m for m in result.matches if m["pass_number"] == 7)
+    assert m["isin"] == "DE0005552004"
+    assert len(m["row_ids_a"]) == 2 and len(m["row_ids_b"]) == 1  # TRD017+018 -> 1
+    assert m["quantity_a"] == 10000
+
+
+# --- Breaks: every scenario surfaces correctly -----------------------------
+
+def _break_by_isin(result, isin):
+    return [b for b in result.breaks if b["isin"] == isin]
+
+
+def test_open_break_count(result):
+    assert result.break_count == 9
+
+
+def test_duplicate_entry_flagged_both_sides(result):
+    dups = [b for b in result.breaks if b["archetype"] == "duplicate_entry"]
+    assert {b["side"] for b in dups} == {"A", "B"}
+    assert all(b["isin"] == "GB00B0YTLJ59" for b in dups)  # TRD001 duplicate
+
+
+def test_three_day_drift_breaks(result):
+    drift_isins = {"DE000BAY0017", "CH0012221716", "IT0003128367", "ES0113211835"}  # TRD008-011
+    for isin in drift_isins:
+        brk = _break_by_isin(result, isin)
+        assert len(brk) == 1
+        assert brk[0]["side"] == "AB"
+        assert brk[0]["deltas"].get("settlement_date:EXACT") == 3  # 3 business days
+
+
+def test_missing_counterparty_leg(result):
+    brk = _break_by_isin(result, "LU0323578657")  # TRD019
+    assert len(brk) == 1
+    assert brk[0]["side"] == "A"
+    assert brk[0]["archetype"] == "missing_counterparty_leg"
+
+
+def test_account_misbooking(result):
+    brk = _break_by_isin(result, "IE00B4L5Y983")  # TRD021
+    assert len(brk) == 1
+    assert any(f["field_a"] == "account_id" for f in brk[0]["failed_rules"])
+
+
+def test_emir_market_value_dispute(result):
+    brk = _break_by_isin(result, "XS0149080666")  # TRD022
+    assert len(brk) == 1
+    assert brk[0]["deltas"].get("computed_market_value:EXACT") == 300000.0
+
+
+def test_corporate_action_explained_not_open(result):
+    # TRD024: 5000 vs 10000 explained by the 2:1 split, excluded from open breaks.
+    open_gb = _break_by_isin(result, "GB00B0YTLJ59")
+    assert all(b["archetype"] == "duplicate_entry" for b in open_gb)  # only the dup, not TRD024
+    explained = result.explained_breaks
+    assert len(explained) == 1
+    assert explained[0]["break_key"] == "TRD024"
+    assert explained[0]["explained_category"] == "CORPORATE_ACTION"
+
+
+# --- Position proof --------------------------------------------------------
+
+def test_position_proof(result):
+    assert result.position_proof["A"]["status"] == "PROVED"
+    assert result.position_proof["A"]["variance"] == 0.0
+    assert result.position_proof["B"]["status"] == "NOT_APPLICABLE"
+
+
+# --- Reproducibility (the critical gate) -----------------------------------
+
+def test_reproducible_hash():
+    df_a, df_b, cfg = generate()
+    aux = load_aux()
+    r1 = reconcile(df_a, df_b, cfg, aux_data=aux)
+    r2 = reconcile(df_a, df_b, cfg, aux_data=aux)
     assert r1.output_hash == r2.output_hash
+    assert len(r1.output_hash) == 64
 
 
-def test_reproducibility_hash_changes_with_different_input():
-    df_a, df_b = _basic_frames()
-    r1 = reconcile(df_a, df_b, CONFIG)
-    df_b_mutated = df_b.copy()
-    df_b_mutated.loc[0, "amount"] = 999.99
-    r2 = reconcile(df_a, df_b_mutated, CONFIG)
-    assert r1.output_hash != r2.output_hash
+# --- Unit tests: engine building blocks ------------------------------------
+
+def test_business_day_diff_excludes_weekends():
+    # 2024-01-15 is Monday; +2 business days -> Wednesday 01-17.
+    assert business_day_diff("2024-01-15", "2024-01-17", set()) == 2
+    assert business_day_diff("2024-01-15", "2024-01-18", set()) == 3
+    # Friday 01-12 to Monday 01-15 spans a weekend -> 1 business day.
+    assert business_day_diff("2024-01-12", "2024-01-15", set()) == 1
 
 
-def test_duplicate_entry_detection():
-    df_a = pd.DataFrame([{"trade_id": "D1", "amount": 100.0, "ccy": "USD", "value_date": "2026-07-01"}])
-    df_b = pd.DataFrame(
+def test_business_day_diff_subtracts_holidays():
+    # Insert 2024-01-16 as a holiday: 01-15 -> 01-17 now counts only 1.
+    assert business_day_diff("2024-01-15", "2024-01-17", {"2024-01-16"}) == 1
+
+
+def test_subset_sum_finds_group():
+    a = assign_row_ids(pd.DataFrame({"isin": ["X", "X"], "quantity": [3000, 7000]}))
+    b = assign_row_ids(pd.DataFrame({"isin": ["X"], "quantity": [10000]}))
+    matcher = SubsetSumMatcher()
+    matches = matcher.find_matches(a, b, "quantity", "quantity", tolerance=1.0, partition_col="isin")
+    assert len(matches) == 1
+    assert matches[0]["sum_a"] == 10000 and matches[0]["variance"] == 0
+
+
+def test_transform_sign_flip_and_abs():
+    df = pd.DataFrame({"quantity": [8000], "dr_cr": ["CR"]})
+    out = TransformPipeline.apply(
+        df,
         [
-            {"ref": "D1", "amount": 100.0, "ccy": "USD", "value_date": "2026-07-01"},
-            {"ref": "D1", "amount": 100.0, "ccy": "USD", "value_date": "2026-07-01"},
-        ]
+            {"step": 1, "op": "sign_flip", "column": "quantity", "condition": "dr_cr == 'CR'"},
+            {"step": 2, "op": "abs_value", "column": "quantity"},
+        ],
     )
-    result = reconcile(df_a, df_b, CONFIG)
-    assert result.matched_count == 1
-    dup_breaks = [b for b in result.breaks if b["archetype"] == "duplicate_entry"]
-    assert len(dup_breaks) == 1
+    assert out["quantity"].iloc[0] == 8000
 
 
-def test_partial_fill_ratio_heuristic():
-    df_a = pd.DataFrame([{"trade_id": "P1", "amount": 300.0, "ccy": "USD", "value_date": "2026-07-01"}])
-    df_b = pd.DataFrame([{"ref": "P1", "amount": 150.0, "ccy": "USD", "value_date": "2026-07-01"}])
-    result = reconcile(df_a, df_b, CONFIG)
-    assert result.breaks[0]["archetype"] == "partial_fill"
-
-
-def test_reference_format_mismatch_fuzzy_merge():
-    df_a = pd.DataFrame([{"trade_id": "TRD-1042", "amount": 200.0, "ccy": "USD", "value_date": "2026-07-05"}])
-    df_b = pd.DataFrame([{"ref": "trd1042", "amount": 200.0, "ccy": "USD", "value_date": "2026-07-05"}])
-    result = reconcile(df_a, df_b, CONFIG)
-    assert result.matched_count == 0
-    assert len(result.breaks) == 1
-    assert result.breaks[0]["archetype"] == "reference_format_mismatch"
-    assert result.breaks[0]["row_a"] is not None and result.breaks[0]["row_b"] is not None
-
-
-def test_wrong_account_reference():
-    cfg = {**CONFIG, "match_rules": CONFIG["match_rules"] + [
-        {"field_a": "account", "field_b": "account", "type": "exact"}
-    ]}
-    df_a = pd.DataFrame(
-        [{"trade_id": "W1", "amount": 100.0, "ccy": "USD", "value_date": "2026-07-01", "account": "ACC-1"}]
-    )
-    df_b = pd.DataFrame(
-        [{"ref": "W1", "amount": 100.0, "ccy": "USD", "value_date": "2026-07-01", "account": "ACC-2"}]
-    )
-    result = reconcile(df_a, df_b, cfg)
-    assert result.breaks[0]["archetype"] == "wrong_account_reference"
-
-
-def test_amount_outside_tolerance_vs_partial_fill_distinction():
-    df_a = pd.DataFrame([{"trade_id": "A1", "amount": 1618.0, "ccy": "USD", "value_date": "2026-07-01"}])
-    df_b = pd.DataFrame([{"ref": "A1", "amount": 1755.42, "ccy": "USD", "value_date": "2026-07-01"}])
-    result = reconcile(df_a, df_b, CONFIG)
-    assert result.breaks[0]["archetype"] == "amount_outside_tolerance"
-
-
-def test_severity_bands_missing_leg_is_high():
-    # An old one-sided row (reference_date is set by the *other*, more recent
-    # clean pair) should read as a genuinely missing leg -> high severity —
-    # distinct from a *recent* one-sided row, which reads as a timing lag.
-    df_a = pd.DataFrame(
+def test_transform_compute_market_value_and_strip_zeros():
+    df = pd.DataFrame({"quantity": [1000], "price": [4.52], "trade_id": ["00TRD01"]})
+    out = TransformPipeline.apply(
+        df,
         [
-            {"trade_id": "CLEAN", "amount": 10.0, "ccy": "USD", "value_date": "2026-07-20"},
-            {"trade_id": "H1", "amount": 1000.0, "ccy": "USD", "value_date": "2026-06-01"},
-        ]
+            {"step": 1, "op": "compute_market_value", "quantity_col": "quantity",
+             "price_col": "price", "output_col": "computed_market_value"},
+            {"step": 2, "op": "strip_leading_zeros", "column": "trade_id"},
+        ],
     )
-    df_b = pd.DataFrame([{"ref": "CLEAN", "amount": 10.0, "ccy": "USD", "value_date": "2026-07-20"}])
-    result = reconcile(df_a, df_b, CONFIG)
-    h1_break = next(b for b in result.breaks if b["break_key"] == "H1")
-    assert h1_break["archetype"] == "missing_counterparty_leg"
-    assert h1_break["severity"] == "high"
+    assert out["computed_market_value"].iloc[0] == 4520.0
+    assert out["trade_id"].iloc[0] == "TRD01"
 
 
-def test_severity_bands_recent_one_sided_is_timing_lag():
-    df_a = pd.DataFrame(
-        [
-            {"trade_id": "CLEAN", "amount": 10.0, "ccy": "USD", "value_date": "2026-07-20"},
-            {"trade_id": "LAG1", "amount": 500.0, "ccy": "USD", "value_date": "2026-07-20"},
-        ]
-    )
-    df_b = pd.DataFrame([{"ref": "CLEAN", "amount": 10.0, "ccy": "USD", "value_date": "2026-07-20"}])
-    result = reconcile(df_a, df_b, CONFIG)
-    lag_break = next(b for b in result.breaks if b["break_key"] == "LAG1")
-    assert lag_break["archetype"] == "timing_settlement_lag"
-    assert lag_break["severity"] == "medium"
+def test_numeric_tolerance_uses_decimal_precision():
+    wf = MatchingWaterfall({"matching_waterfall": []})
+    rule = {"field_a": "v", "field_b": "v", "match_type": "NUMERIC_TOLERANCE", "tolerance": 0.01}
+    assert wf._check_value_rule({"v": "100.00"}, {"v": "100.01"}, rule)[0]
+    assert not wf._check_value_rule({"v": "100.00"}, {"v": "100.02"}, rule)[0]
+
+
+def test_none_value_fails_rule_never_raises():
+    wf = MatchingWaterfall({"matching_waterfall": []})
+    rule = {"field_a": "v", "field_b": "v", "match_type": "NUMERIC_TOLERANCE", "tolerance": 1}
+    assert wf._check_value_rule({"v": None}, {"v": 5}, rule) == (False, None)

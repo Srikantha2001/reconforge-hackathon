@@ -1,0 +1,6 @@
+client_alias,canonical_id,client_name,currency
+ACC001,DB_ACC_001_GBP,Alpha Capital,GBP
+ACC002,DB_ACC_002_EUR,Beta Fund Management,EUR
+ACC003,DB_ACC_003_EUR,Gamma Asset Managers,EUR
+FUND_A,DB_FUND_ALPHA_001,Alpha Capital Main Fund,GBP
+FUND_B,DB_FUND_BETA_002,Beta Equity Fund,EUR

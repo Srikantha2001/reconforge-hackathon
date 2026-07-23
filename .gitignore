@@ -25,3 +25,4 @@ backend/data/*.db
 .DS_Store
 .idea/
 .vscode/
+tasks.md

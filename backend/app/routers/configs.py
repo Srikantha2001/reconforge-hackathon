@@ -1,3 +1,15 @@
+"""Config endpoints v2 (P8): author → submit → approve/reject, versions.
+
+Identity + role come from the JWT (P4): MAKER authors/submits, CHECKER
+approves/rejects (maker ≠ checker). Configs move DRAFT → PENDING_APPROVAL →
+APPROVED, with the prior APPROVED version marked SUPERSEDED on a re-version.
+Offline (stub provider) authoring degrades to the pre-approved securities recon
+(the seed DEFAULT_CONFIG) — a real LLM would author a novel v2 config from the
+description; either way the result is schema-validated before it is stored.
+"""
+from __future__ import annotations
+
+import copy
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -5,16 +17,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..actors import is_valid_actor
+from ..auth import get_current_user, require_role
 from ..config_schema import ConfigValidationError, validate_and_repair
 from ..db import get_db
 from ..llm import get_provider
-from ..schemas import (
-    ApproveConfigRequest,
-    AuthorConfigRequest,
-    ConfigOut,
-    EditConfigRequest,
-)
+from ..schemas import AuthorConfigV2Request, ConfigDecisionRequest, ConfigOut
+from ..seed.generator import DEFAULT_CONFIG
 from ..services import audit
 
 router = APIRouter(prefix="/api/configs", tags=["configs"])
@@ -26,135 +34,164 @@ def config_to_out(cfg: models.ReconConfig, repairs: Optional[List[str]] = None) 
     return out
 
 
-def _require_actor(actor_id: str) -> None:
-    if not is_valid_actor(actor_id):
-        raise HTTPException(status_code=400, detail=f"Unknown actor_id '{actor_id}'")
+def _author_v2_config(nl_description: str) -> tuple:
+    """Return (valid_config_dict, repairs). Stub degrades to the seed recon."""
+    provider = get_provider()
+    raw = provider.author_config(nl_description, [], []) if nl_description else None
+    if raw is not None:
+        try:
+            valid, repairs = validate_and_repair(raw)
+            return valid, repairs
+        except ConfigValidationError:
+            pass
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["status"] = "DRAFT"
+    return cfg, ["offline stub authoring degraded to the pre-approved recon"]
+
+
+def _next_version(db: Session, recon_name: str) -> str:
+    from ..agents import _bump_minor
+    existing = (
+        db.query(models.ReconConfig)
+        .filter(models.ReconConfig.recon_name == recon_name)
+        .order_by(models.ReconConfig.id.desc())
+        .first()
+    )
+    return _bump_minor(existing.version) if existing else "1.0.0"
 
 
 @router.post("/author", response_model=ConfigOut)
-def author_config(body: AuthorConfigRequest, db: Session = Depends(get_db)):
-    _require_actor(body.actor_id)
-    provider = get_provider()
-
-    raw_config = provider.author_config(body.nl_description, body.columns_a, body.columns_b)
+def author_config(
+    body: AuthorConfigV2Request,
+    user: dict = Depends(require_role("MAKER")),
+    db: Session = Depends(get_db),
+):
+    valid_config, repairs = _author_v2_config(body.nl_description)
     if body.recon_name_hint:
-        raw_config["recon_name"] = body.recon_name_hint
+        valid_config["recon_name"] = body.recon_name_hint
+    valid_config["status"] = "DRAFT"
 
-    try:
-        valid_config, repairs = validate_and_repair(raw_config)
-    except ConfigValidationError as e:
-        raise HTTPException(status_code=422, detail={"message": "Config invalid even after repair", "errors": e.errors})
+    recon_name = valid_config["recon_name"]
+    version = _next_version(db, recon_name)
+    valid_config["version"] = version
 
-    existing_max = (
-        db.query(models.ReconConfig)
-        .filter(models.ReconConfig.recon_name == valid_config["recon_name"])
-        .order_by(models.ReconConfig.version.desc())
-        .first()
-    )
-    version = (existing_max.version + 1) if existing_max else 1
-
-    summary = provider.summarize_config(valid_config)
-
+    provider = get_provider()
     cfg = models.ReconConfig(
-        recon_name=valid_config["recon_name"],
+        recon_name=recon_name,
+        recon_type=valid_config.get("recon_type", "POSITION"),
         version=version,
         config_json=valid_config,
-        english_summary=summary,
-        status="draft",
-        author_id=body.actor_id,
+        english_summary=provider.summarize_config(valid_config),
+        status="DRAFT",
+        author_id=user["user_id"],
         origin="authoring",
     )
     db.add(cfg)
     db.flush()
-
-    audit(
-        db,
-        actor_id=body.actor_id,
-        action="config_authored",
-        entity_type="recon_config",
-        entity_id=cfg.id,
-        after={"config": valid_config, "repairs": repairs},
-    )
+    audit(db, actor_id=user["user_id"], action="config_authored", entity_type="recon_config",
+          entity_id=cfg.id, after={"recon_name": recon_name, "version": version, "repairs": repairs})
     db.commit()
     db.refresh(cfg)
     return config_to_out(cfg, repairs)
 
 
-@router.get("/{config_id}", response_model=ConfigOut)
-def get_config(config_id: int, db: Session = Depends(get_db)):
+@router.post("/{config_id}/submit", response_model=ConfigOut)
+def submit_config(
+    config_id: int,
+    user: dict = Depends(require_role("MAKER")),
+    db: Session = Depends(get_db),
+):
     cfg = db.get(models.ReconConfig, config_id)
     if not cfg:
         raise HTTPException(status_code=404, detail="Config not found")
+    if cfg.status != "DRAFT":
+        raise HTTPException(status_code=400, detail=f"Only DRAFT configs can be submitted (is {cfg.status})")
+    cfg.status = "PENDING_APPROVAL"
+    audit(db, actor_id=user["user_id"], action="config_submitted", entity_type="recon_config",
+          entity_id=cfg.id, after={"status": "PENDING_APPROVAL"})
+    db.commit()
+    db.refresh(cfg)
     return config_to_out(cfg)
-
-
-@router.get("", response_model=List[ConfigOut])
-def list_configs(recon_name: Optional[str] = None, db: Session = Depends(get_db)):
-    q = db.query(models.ReconConfig)
-    if recon_name:
-        q = q.filter(models.ReconConfig.recon_name == recon_name)
-    configs = q.order_by(models.ReconConfig.recon_name, models.ReconConfig.version).all()
-    return [config_to_out(c) for c in configs]
-
-
-@router.post("/{config_id}/edit", response_model=ConfigOut)
-def edit_config(config_id: int, body: EditConfigRequest, db: Session = Depends(get_db)):
-    _require_actor(body.actor_id)
-    cfg = db.get(models.ReconConfig, config_id)
-    if not cfg:
-        raise HTTPException(status_code=404, detail="Config not found")
-    if cfg.status != "draft":
-        raise HTTPException(status_code=400, detail="Only draft configs can be edited; approved configs are re-versioned instead")
-
-    try:
-        valid_config, repairs = validate_and_repair(body.config_json)
-    except ConfigValidationError as e:
-        raise HTTPException(status_code=422, detail={"message": "Config invalid even after repair", "errors": e.errors})
-
-    before = cfg.config_json
-    cfg.config_json = valid_config
-    provider = get_provider()
-    cfg.english_summary = provider.summarize_config(valid_config)
-
-    audit(
-        db,
-        actor_id=body.actor_id,
-        action="config_edited",
-        entity_type="recon_config",
-        entity_id=cfg.id,
-        before={"config": before},
-        after={"config": valid_config, "repairs": repairs},
-    )
-    db.commit()
-    db.refresh(cfg)
-    return config_to_out(cfg, repairs)
 
 
 @router.post("/{config_id}/approve", response_model=ConfigOut)
-def approve_config(config_id: int, body: ApproveConfigRequest, db: Session = Depends(get_db)):
-    _require_actor(body.actor_id)
+def approve_config(
+    config_id: int,
+    body: ConfigDecisionRequest,
+    user: dict = Depends(require_role("CHECKER")),
+    db: Session = Depends(get_db),
+):
     cfg = db.get(models.ReconConfig, config_id)
     if not cfg:
         raise HTTPException(status_code=404, detail="Config not found")
-    if cfg.status == "approved":
+    if cfg.status == "APPROVED":
         raise HTTPException(status_code=400, detail="Config is already approved")
-    if cfg.author_id and body.actor_id == cfg.author_id:
+    if cfg.author_id and user["user_id"] == cfg.author_id:
         raise HTTPException(status_code=403, detail="Maker cannot self-approve — pick a different reviewer")
 
-    before_status = cfg.status
-    cfg.status = "approved"
-    cfg.approver_id = body.actor_id
-    cfg.approved_at = datetime.now(timezone.utc)
+    if not body.approved:
+        cfg.status = "DRAFT"
+        audit(db, actor_id=user["user_id"], action="config_rejected", entity_type="recon_config",
+              entity_id=cfg.id, after={"status": "DRAFT", "notes": body.notes})
+        db.commit()
+        db.refresh(cfg)
+        return config_to_out(cfg)
 
-    audit(
-        db,
-        actor_id=body.actor_id,
-        action="config_approved",
-        entity_type="recon_config",
-        entity_id=cfg.id,
-        before={"status": before_status},
-        after={"status": "approved", "approver_id": body.actor_id, "version": cfg.version},
+    # Supersede the prior APPROVED version of the same recon.
+    prior = (
+        db.query(models.ReconConfig)
+        .filter(models.ReconConfig.recon_name == cfg.recon_name,
+                models.ReconConfig.status == "APPROVED",
+                models.ReconConfig.id != cfg.id)
+        .all()
     )
+    for p in prior:
+        p.status = "SUPERSEDED"
+        p.superseded_by = cfg.id
+
+    cfg.status = "APPROVED"
+    cfg.approver_id = user["user_id"]
+    cfg.approved_at = datetime.now(timezone.utc)
+    cfg_json = dict(cfg.config_json)
+    cfg_json["status"] = "APPROVED"
+    cfg.config_json = cfg_json
+    audit(db, actor_id=user["user_id"], action="config_approved", entity_type="recon_config",
+          entity_id=cfg.id, after={"status": "APPROVED", "version": cfg.version,
+                                   "superseded": [p.id for p in prior]})
     db.commit()
     db.refresh(cfg)
     return config_to_out(cfg)
+
+
+@router.get("/{config_id}", response_model=ConfigOut)
+def get_config(config_id: int, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    cfg = db.get(models.ReconConfig, config_id)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Config not found")
+    return config_to_out(cfg)
+
+
+@router.get("/{config_id}/versions", response_model=List[ConfigOut])
+def config_versions(config_id: int, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    cfg = db.get(models.ReconConfig, config_id)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Config not found")
+    versions = (
+        db.query(models.ReconConfig)
+        .filter(models.ReconConfig.recon_name == cfg.recon_name)
+        .order_by(models.ReconConfig.id)
+        .all()
+    )
+    return [config_to_out(c) for c in versions]
+
+
+@router.get("", response_model=List[ConfigOut])
+def list_configs(
+    recon_name: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(models.ReconConfig)
+    if recon_name:
+        q = q.filter(models.ReconConfig.recon_name == recon_name)
+    return [config_to_out(c) for c in q.order_by(models.ReconConfig.recon_name, models.ReconConfig.id).all()]

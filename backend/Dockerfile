@@ -2,14 +2,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for psycopg2 are bundled in psycopg2-binary; keep image lean.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Seed the demo data on first build so the app has a rehearsed pair available.
-RUN python -m app.seed.generator --out ./data || true
+# Bake the ReconOS securities seed dataset (deterministic, byte-identical)
+# into the image so the app boots demo-ready. A failure here should fail the
+# build loudly — the seed generator self-checks every demo scenario.
+RUN python -m app.seed.generator --out ./data
 
 EXPOSE 8000
 

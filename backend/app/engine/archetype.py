@@ -1,199 +1,191 @@
-"""Deterministic break-archetype classifier — the no-LLM fallback for the SME
-agent (§7: "Detection can be done deterministically from deltas").
+"""Deterministic break classifier v2 (P7) — 12 archetypes, 9 causal origins.
 
-This is pure heuristics over rule results and row shape. It never calls an
-LLM; the SME agent (app/llm) calls into this when the provider is `stub` or
-as a sanity cross-check when it isn't.
+Pure function of a break dict (as produced by ``runner.reconcile``): maps
+pass/side/failed-rules/deltas to one of 12 archetypes, a causal origin, the
+most-responsible field, a confidence, and a 3-layer root-cause tree
+(data_layer / rule_that_failed / ai_diagnosis). No LLM, no DB — this is the
+"no-LLM fallback" the SME agent builds on, and it keeps runs reproducible.
 """
 from __future__ import annotations
 
-from datetime import date
 from typing import Any, Dict, List, Optional
 
-ARCHETYPES = [
-    "value_date_mismatch",
-    "fx_rounding_diff",
-    "partial_fill",
+# --- Taxonomy ---------------------------------------------------------------
+ARCHETYPES = (
+    "settlement_date_drift",
+    "quantity_rounding",
+    "fx_price_rounding",
+    "one_to_many_split",
+    "many_to_one_aggregate",
+    "nm_subset_group",
+    "missing_leg",
     "duplicate_entry",
-    "fee_charge_diff",
-    "timing_settlement_lag",
-    "wrong_account_reference",
-    "missing_counterparty_leg",
-    "amount_outside_tolerance",
-    "reference_format_mismatch",
-]
+    "account_misbooking",
+    "emir_amount_dispute",
+    "corporate_action_adjustment",
+    "cass_shortfall",
+)
 
-ARCHETYPE_LABELS = {
-    "value_date_mismatch": "Value-date mismatch",
-    "fx_rounding_diff": "FX rounding / conversion diff",
-    "partial_fill": "Partial fill / quantity mismatch",
+ARCHETYPE_LABELS: Dict[str, str] = {
+    "settlement_date_drift": "Settlement date drift",
+    "quantity_rounding": "Quantity rounding",
+    "fx_price_rounding": "FX / price rounding",
+    "one_to_many_split": "One-to-many split settlement",
+    "many_to_one_aggregate": "Many-to-one aggregate",
+    "nm_subset_group": "N-to-M subset group",
+    "missing_leg": "Missing counterparty leg",
     "duplicate_entry": "Duplicate entry",
-    "fee_charge_diff": "Fee / charge difference",
-    "timing_settlement_lag": "Timing / settlement lag (one-sided)",
-    "wrong_account_reference": "Wrong account / reference",
-    "missing_counterparty_leg": "Missing counterparty leg",
-    "amount_outside_tolerance": "Amount outside tolerance",
-    "reference_format_mismatch": "Reference / ID format mismatch",
+    "account_misbooking": "Account misbooking",
+    "emir_amount_dispute": "EMIR market-value dispute",
+    "corporate_action_adjustment": "Corporate action adjustment",
+    "cass_shortfall": "CASS safeguarding shortfall",
 }
 
-_NICE_FRACTIONS = (0.5, 1 / 3, 2 / 3, 0.25, 0.75, 0.2, 0.4, 0.6, 0.8)
+CAUSAL_ORIGINS = (
+    "SETTLEMENT_TIMING_LAG",
+    "UPSTREAM_ETL_TRUNCATION",
+    "COUNTERPARTY_FEE_DEDUCTION",
+    "LEGAL_ENTITY_MISBOOKING",
+    "FX_RATE_SOURCE_DIVERGENCE",
+    "PARTIAL_SETTLEMENT",
+    "CORPORATE_ACTION_PROCESSING_LAG",
+    "PRICING_SOURCE_MISMATCH",
+    "SYSTEM_REPLAY",
+)
+
+# Per-archetype defaults: (causal_origin, confidence).
+_META: Dict[str, tuple] = {
+    "settlement_date_drift": ("SETTLEMENT_TIMING_LAG", 0.85),
+    "quantity_rounding": ("UPSTREAM_ETL_TRUNCATION", 0.70),
+    "fx_price_rounding": ("FX_RATE_SOURCE_DIVERGENCE", 0.72),
+    "one_to_many_split": ("PARTIAL_SETTLEMENT", 0.80),
+    "many_to_one_aggregate": ("PARTIAL_SETTLEMENT", 0.80),
+    "nm_subset_group": ("PARTIAL_SETTLEMENT", 0.75),
+    "missing_leg": ("SETTLEMENT_TIMING_LAG", 0.60),
+    "duplicate_entry": ("SYSTEM_REPLAY", 0.80),
+    "account_misbooking": ("LEGAL_ENTITY_MISBOOKING", 0.80),
+    "emir_amount_dispute": ("PRICING_SOURCE_MISMATCH", 0.90),
+    "corporate_action_adjustment": ("CORPORATE_ACTION_PROCESSING_LAG", 0.90),
+    "cass_shortfall": ("COUNTERPARTY_FEE_DEDUCTION", 0.85),
+}
+
+# A market-value delta above this is a genuine dispute (EMIR-scale); below it a
+# rounding artefact. Chosen well above the pass-3 rounding guard (5.0).
+_MV_DISPUTE_THRESHOLD = 100.0
+_QTY_ROUNDING_THRESHOLD = 2.0
 
 
-def _find_rule(rule_results: List[Dict[str, Any]], rule_type: str) -> Optional[Dict[str, Any]]:
-    for r in rule_results:
-        if r["type"] == rule_type and not r["passed"]:
+def _first_failed(failed_rules: List[Dict[str, Any]], needle: str) -> Optional[Dict[str, Any]]:
+    for r in failed_rules or []:
+        field = f"{r.get('field_a', '')}".lower()
+        if needle in field:
             return r
     return None
 
 
-def _find_field_containing(
-    rule_results: List[Dict[str, Any]], needle: str
-) -> Optional[Dict[str, Any]]:
-    for r in rule_results:
-        if not r["passed"] and (needle in r["field_a"].lower() or needle in r["field_b"].lower()):
-            return r
-    return None
+def _num(value: Any) -> float:
+    try:
+        v = float(value)
+        return 0.0 if v != v else v
+    except (TypeError, ValueError):
+        return 0.0
 
 
-def classify(
-    *,
-    side: str,  # "two_sided" | "one_sided_a" | "one_sided_b" | "duplicate" | "fuzzy_key_mismatch"
-    rule_results: List[Dict[str, Any]],
-    row_a: Optional[Dict[str, Any]] = None,
-    row_b: Optional[Dict[str, Any]] = None,
-    reference_date: Optional[date] = None,
-    row_date: Optional[date] = None,
-) -> Dict[str, Any]:
-    """Return {archetype, label, explanation, confidence} from deltas alone."""
-
-    if side == "fuzzy_key_mismatch":
-        return _result(
-            "reference_format_mismatch",
-            "The reference/ID on each side matches once punctuation and case are "
-            "normalized — same transaction, differently formatted identifier.",
-            0.65,
-        )
-
-    if side == "duplicate":
-        return _result(
-            "duplicate_entry",
-            "Multiple rows share the same reconciliation key on one side; one was "
-            "paired, the rest look like duplicate postings.",
-            0.8,
-        )
-
-    if side in ("one_sided_a", "one_sided_b"):
-        # Recency heuristic: if this row's value_date is within the last 2 days
-        # of the dataset's reference date, treat it as a timing/settlement lag
-        # (the other leg likely posts next cycle) rather than a permanently
-        # missing counterparty leg.
-        if reference_date is not None and row_date is not None:
-            age_days = (reference_date - row_date).days
-            if 0 <= age_days <= 2:
-                return _result(
-                    "timing_settlement_lag",
-                    f"This entry is only {age_days} day(s) old relative to the run date "
-                    "and has no counterpart yet — looks like a settlement-cycle timing "
-                    "lag rather than a genuine break.",
-                    0.65,
-                )
-        return _result(
-            "missing_counterparty_leg",
-            "No corresponding row exists for this key on the other side, and it isn't "
-            "recent enough to be an in-flight timing lag — the counterparty leg "
-            "appears to be genuinely missing.",
-            0.6,
-        )
-
-    # two_sided: a key-matched pair that failed one or more validation rules.
-    date_fail = _find_rule(rule_results, "date_tolerance")
-    amount_fail = _find_rule(rule_results, "numeric_tolerance")
-    account_fail = _find_field_containing(rule_results, "account")
-    exact_fail = _find_rule(rule_results, "exact")
-
-    if date_fail and not amount_fail:
-        delta_days = date_fail.get("delta") or 0
-        return _result(
-            "value_date_mismatch",
-            f"Value dates differ by {delta_days} day(s), outside the configured "
-            "tolerance, but every other field lines up.",
-            0.8,
-        )
-
-    if amount_fail and not date_fail:
-        va, vb = amount_fail.get("value_a"), amount_fail.get("value_b")
-        delta = amount_fail.get("delta") or 0
-        ratio = None
-        try:
-            fa, fb = float(va), float(vb)
-            if fa and fb:
-                ratio = min(fa, fb) / max(fa, fb)
-        except (TypeError, ValueError):
-            ratio = None
-
-        if ratio is not None and any(abs(ratio - frac) < 0.03 for frac in _NICE_FRACTIONS):
-            return _result(
-                "partial_fill",
-                f"One side's amount is about {round(ratio, 2)}x the other — looks like "
-                "a partial fill or split settlement rather than a plain mismatch.",
-                0.6,
-            )
-        if 0 < delta <= 0.05:
-            return _result(
-                "fx_rounding_diff",
-                f"A sub-cent/rounding-scale difference ({delta}) consistent with an FX "
-                "conversion or rounding artifact.",
-                0.55,
-            )
-        if 0 < delta <= 5:
-            return _result(
-                "fee_charge_diff",
-                f"Amounts differ by a small fixed-looking value ({delta}); consistent "
-                "with an unaccounted fee or charge.",
-                0.6,
-            )
-        return _result(
-            "amount_outside_tolerance",
-            f"Amounts differ by {delta}, exceeding the configured numeric tolerance.",
-            0.7,
-        )
-
-    if account_fail:
-        return _result(
-            "wrong_account_reference",
-            f"'{account_fail['field_a']}' does not match exactly between sides — the "
-            "transaction may have posted to the wrong account.",
-            0.6,
-        )
-
-    if exact_fail:
-        return _result(
-            "wrong_account_reference",
-            f"'{exact_fail['field_a']}' does not match exactly between sides even "
-            "though the reconciliation key does.",
-            0.5,
-        )
-
-    if amount_fail and date_fail:
-        return _result(
-            "partial_fill",
-            "Both amount and date disagree — consistent with a partial fill or split "
-            "settlement rather than a single simple difference.",
-            0.45,
-        )
-
-    return _result(
-        "amount_outside_tolerance",
-        "One or more validation rules failed; no more specific pattern detected from "
-        "the available deltas.",
-        0.3,
-    )
-
-
-def _result(archetype: str, explanation: str, confidence: float) -> Dict[str, Any]:
+def _result(archetype: str, field: str, brk: Dict[str, Any], *, confidence: Optional[float] = None,
+            evidence: Optional[List[str]] = None, alternative: str = "") -> Dict[str, Any]:
+    causal, base_conf = _META[archetype]
+    conf = base_conf if confidence is None else confidence
     return {
         "archetype": archetype,
         "label": ARCHETYPE_LABELS[archetype],
-        "explanation": explanation,
-        "confidence": confidence,
+        "causal_origin": causal,
+        "field_most_responsible": field,
+        "confidence": round(conf, 3),
+        "root_cause_tree": _root_cause_tree(archetype, field, brk, evidence or [], alternative),
     }
+
+
+def _root_cause_tree(archetype, field, brk, evidence, alternative) -> Dict[str, Any]:
+    qa, qb = _num(brk.get("quantity_a")), _num(brk.get("quantity_b"))
+    amt_var = brk.get("amount_variance")
+    side = brk.get("side")
+    return {
+        "data_layer": {
+            "summary": (
+                f"Side A qty {qa:g} vs Side B qty {qb:g}"
+                + (f", value Δ {amt_var}" if amt_var not in (None, 0) else "")
+                + (" (one-sided)" if side in ("A", "B") else "")
+            ),
+            "isin": brk.get("isin"),
+            "side": side,
+        },
+        "rule_that_failed": {
+            "pass": brk.get("pass_that_failed"),
+            "field": field,
+            "deltas": brk.get("deltas", {}),
+        },
+        "ai_diagnosis": {
+            "primary_hypothesis": ARCHETYPE_LABELS[archetype],
+            "evidence": evidence,
+            "alternative": alternative,
+        },
+    }
+
+
+def classify(brk: Dict[str, Any]) -> Dict[str, Any]:
+    """Classify a break dict into the v2 taxonomy. Always returns a result."""
+    side = brk.get("side")
+    hint = brk.get("archetype")
+    failed = brk.get("failed_rules", []) or []
+
+    # 1) Corporate-action explained breaks (engine tags explained_category).
+    if brk.get("explained_category") == "CORPORATE_ACTION":
+        return _result("corporate_action_adjustment", "quantity", brk,
+                       evidence=["Quantity ratio matches a corporate-action split ratio."])
+
+    # 2) Engine structural hints.
+    if hint == "duplicate_entry":
+        return _result("duplicate_entry", "reference", brk,
+                       evidence=["Multiple rows share the same natural key on one side."])
+    if hint == "missing_counterparty_leg" or side in ("A", "B"):
+        return _result("missing_leg", "counterparty", brk,
+                       evidence=["No counterpart row on the other side."],
+                       alternative="Could be an in-flight settlement timing lag rather than a genuine miss.")
+
+    # 3) Two-sided: read the failing rule.
+    date_fail = _first_failed(failed, "date")
+    account_fail = _first_failed(failed, "account")
+    mv_fail = _first_failed(failed, "market_value") or _first_failed(failed, "amount")
+    qty_fail = _first_failed(failed, "quantity")
+
+    if date_fail:
+        delta = date_fail.get("delta")
+        return _result("settlement_date_drift", "settlement_date", brk,
+                       evidence=[f"Settlement date differs by {delta} business day(s)."])
+    if account_fail:
+        return _result("account_misbooking", "account_id", brk,
+                       evidence=[f"Booked to {account_fail.get('value_b')} not {account_fail.get('value_a')}."])
+    if mv_fail:
+        delta = abs(_num(mv_fail.get("delta")))
+        if delta > _MV_DISPUTE_THRESHOLD:
+            return _result("emir_amount_dispute", "computed_market_value", brk,
+                           evidence=[f"Market-value discrepancy of {delta:g} — a pricing/valuation dispute."],
+                           alternative="Confirm the price source used on each side.")
+        return _result("fx_price_rounding", "computed_market_value", brk,
+                       evidence=[f"Sub-threshold value difference of {delta:g} — FX/price rounding."])
+    if qty_fail:
+        delta = abs(_num(qty_fail.get("delta")))
+        if delta <= _QTY_ROUNDING_THRESHOLD:
+            return _result("quantity_rounding", "quantity", brk,
+                           evidence=[f"Quantity differs by {delta:g} — a rounding/truncation artefact."])
+        return _result("nm_subset_group", "quantity", brk, confidence=0.5,
+                       evidence=[f"Quantity differs by {delta:g} — possible split/subset settlement."],
+                       alternative="May resolve as a many-to-one aggregate once all legs settle.")
+
+    # 4) Fallback: genuinely ambiguous — low confidence so the SME refuses.
+    if _num(brk.get("amount_variance")):
+        return _result("fx_price_rounding", "computed_market_value", brk, confidence=0.4)
+    if _num(brk.get("quantity_variance")):
+        return _result("quantity_rounding", "quantity", brk, confidence=0.4)
+    return _result("missing_leg", "unknown", brk, confidence=0.30,
+                   evidence=["No decisive failing rule — insufficient signal to classify."])

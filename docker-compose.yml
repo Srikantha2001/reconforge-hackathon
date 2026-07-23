@@ -1,39 +1,37 @@
 services:
-  db:
-    image: postgres:16-alpine
-    container_name: reconforge-db
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-reconforge}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-reconforge}
-      POSTGRES_DB: ${POSTGRES_DB:-reconforge}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reconforge}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   backend:
     build: ./backend
     container_name: reconforge-backend
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-reconforge}:${POSTGRES_PASSWORD:-reconforge}@db:5432/${POSTGRES_DB:-reconforge}
+      # SQLite file lives inside the container at /app/data (named volume below).
+      # The relative path resolves against /app, the image's WORKDIR.
+      DATABASE_URL: ${DATABASE_URL:-sqlite+pysqlite:///./data/reconforge.db}
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       STP_THRESHOLD: ${STP_THRESHOLD:-0.90}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      # Auth (P4)
+      SECRET_KEY: ${SECRET_KEY:-reconos-hackathon-secret-change-in-production}
+      ACCESS_TOKEN_EXPIRE_HOURS: ${ACCESS_TOKEN_EXPIRE_HOURS:-24}
+      # Governance thresholds (P5)
+      WRITE_OFF_AUTO_APPROVE_BELOW: ${WRITE_OFF_AUTO_APPROVE_BELOW:-500.00}
+      WRITE_OFF_DUAL_CHECKER_ABOVE: ${WRITE_OFF_DUAL_CHECKER_ABOVE:-10000.00}
+      PENDING_APPROVAL_EXPIRY_HOURS: ${PENDING_APPROVAL_EXPIRY_HOURS:-24}
+      # Regulatory thresholds (P6)
+      EMIR_AMOUNT_THRESHOLD_EUR: ${EMIR_AMOUNT_THRESHOLD_EUR:-15000000.00}
+      EMIR_DAYS_THRESHOLD: ${EMIR_DAYS_THRESHOLD:-15}
+      CASS_SHORTFALL_THRESHOLD_EUR: ${CASS_SHORTFALL_THRESHOLD_EUR:-1000.00}
+      # Subset-sum performance guards (P3)
+      SUBSET_SUM_MAX_GROUP_SIZE: ${SUBSET_SUM_MAX_GROUP_SIZE:-4}
+      SUBSET_SUM_MAX_ROWS_PER_PARTITION: ${SUBSET_SUM_MAX_ROWS_PER_PARTITION:-50}
+      SUBSET_SUM_TIMEOUT_SECONDS: ${SUBSET_SUM_TIMEOUT_SECONDS:-30}
     ports:
       - "8000:8000"
     volumes:
+      - backend_data:/app/data
       - ./backend/uploads:/app/uploads
 
 volumes:
-  pgdata:
+  backend_data:

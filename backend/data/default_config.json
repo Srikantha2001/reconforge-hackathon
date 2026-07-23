@@ -1,49 +1,394 @@
 {
-  "recon_name": "Nostro_USD_Daily",
-  "source_a": {
-    "alias": "ledger",
-    "key_columns": [
-      "trade_id"
-    ]
-  },
-  "source_b": {
-    "alias": "statement",
-    "key_columns": [
-      "ref"
-    ]
-  },
-  "transforms": [
+  "recon_id": "recon_001",
+  "recon_name": "DB_PositionRecon_IBOR_vs_BNYMellon_Daily",
+  "recon_type": "POSITION",
+  "version": "1.0.0",
+  "status": "APPROVED",
+  "source_topology": "ONE_VS_ONE",
+  "sources": [
     {
-      "field": "amount",
-      "op": "abs"
+      "id": "src_a",
+      "alias": "internal_ibor",
+      "side": "A",
+      "file": "internal_ibor.csv",
+      "ingestion_type": "FILE_UPLOAD",
+      "matching_unit": "QUANTITY",
+      "sign_convention": "DEBIT_POSITIVE"
     },
     {
-      "field": "ccy",
-      "op": "upper"
+      "id": "src_b",
+      "alias": "bny_mt535",
+      "side": "B",
+      "file": "bny_mt535_custody.csv",
+      "ingestion_type": "FILE_UPLOAD",
+      "matching_unit": "QUANTITY",
+      "sign_convention": "DEBIT_POSITIVE"
     }
   ],
-  "match_rules": [
+  "auxiliary_files": [
     {
-      "field_a": "trade_id",
-      "field_b": "ref",
-      "type": "exact"
+      "id": "aux_fx",
+      "alias": "fx_rates",
+      "file": "fx_rates.csv",
+      "key_column": "currency"
     },
     {
-      "field_a": "amount",
-      "field_b": "amount",
-      "type": "numeric_tolerance",
-      "tolerance": 0.01
+      "id": "aux_instruments",
+      "alias": "instrument_master",
+      "file": "instrument_master.csv",
+      "key_column": "isin"
     },
     {
-      "field_a": "value_date",
-      "field_b": "value_date",
-      "type": "date_tolerance",
-      "tolerance_days": 2
+      "id": "aux_accounts",
+      "alias": "account_aliases",
+      "file": "account_aliases.csv",
+      "key_column": "client_alias"
     },
     {
-      "field_a": "account",
-      "field_b": "account",
-      "type": "exact"
+      "id": "aux_holidays",
+      "alias": "market_holidays",
+      "file": "market_holidays.csv",
+      "key_column": "date"
+    },
+    {
+      "id": "aux_corp_actions",
+      "alias": "corporate_actions",
+      "file": "corporate_actions.csv",
+      "key_column": "isin"
     }
-  ]
+  ],
+  "transforms": {
+    "side_a": [
+      {
+        "step": 1,
+        "op": "sign_flip",
+        "column": "quantity",
+        "condition": "dr_cr == 'CR'"
+      },
+      {
+        "step": 2,
+        "op": "abs_value",
+        "column": "quantity"
+      },
+      {
+        "step": 3,
+        "op": "upper_case",
+        "column": "isin"
+      },
+      {
+        "step": 4,
+        "op": "date_normalise",
+        "column": "settlement_date",
+        "input_format": "%Y-%m-%d"
+      },
+      {
+        "step": 5,
+        "op": "strip_leading_zeros",
+        "column": "trade_id"
+      },
+      {
+        "step": 6,
+        "op": "compute_market_value",
+        "quantity_col": "quantity",
+        "price_col": "price",
+        "output_col": "computed_market_value"
+      }
+    ],
+    "side_b": [
+      {
+        "step": 1,
+        "op": "upper_case",
+        "column": "isin"
+      },
+      {
+        "step": 2,
+        "op": "date_normalise",
+        "column": "posting_date",
+        "input_format": "%Y-%m-%d"
+      },
+      {
+        "step": 3,
+        "op": "strip_leading_zeros",
+        "column": "reference"
+      },
+      {
+        "step": 4,
+        "op": "compute_market_value",
+        "quantity_col": "quantity",
+        "price_col": "price",
+        "output_col": "computed_market_value"
+      }
+    ]
+  },
+  "position_control": {
+    "enabled": true,
+    "side_a": {
+      "opening_balance_field": "opening_quantity",
+      "closing_balance_field": "closing_quantity",
+      "movement_field": "net_quantity",
+      "balance_type": "QUANTITY"
+    },
+    "side_b": {
+      "opening_balance_field": null,
+      "closing_balance_field": null,
+      "movement_field": null,
+      "balance_type": "QUANTITY"
+    },
+    "tolerance": 0.0,
+    "explained_break_categories": [
+      "CORPORATE_ACTION",
+      "PENDING_SETTLEMENT"
+    ]
+  },
+  "matching_waterfall": [
+    {
+      "pass": 1,
+      "name": "Exact ISIN + quantity + value + date + account",
+      "type": "ONE_TO_ONE",
+      "key_rules": [
+        {
+          "field_a": "isin",
+          "field_b": "isin",
+          "match_type": "EXACT"
+        }
+      ],
+      "value_rules": [
+        {
+          "field_a": "quantity",
+          "field_b": "quantity",
+          "match_type": "EXACT"
+        },
+        {
+          "field_a": "computed_market_value",
+          "field_b": "computed_market_value",
+          "match_type": "EXACT"
+        },
+        {
+          "field_a": "settlement_date",
+          "field_b": "posting_date",
+          "match_type": "EXACT"
+        },
+        {
+          "field_a": "account_id",
+          "field_b": "account_id",
+          "match_type": "EXACT"
+        }
+      ]
+    },
+    {
+      "pass": 2,
+      "name": "Settlement date tolerance (2 business days)",
+      "type": "ONE_TO_ONE",
+      "key_rules": [
+        {
+          "field_a": "isin",
+          "field_b": "isin",
+          "match_type": "EXACT"
+        }
+      ],
+      "value_rules": [
+        {
+          "field_a": "quantity",
+          "field_b": "quantity",
+          "match_type": "EXACT"
+        },
+        {
+          "field_a": "computed_market_value",
+          "field_b": "computed_market_value",
+          "match_type": "EXACT"
+        },
+        {
+          "field_a": "settlement_date",
+          "field_b": "posting_date",
+          "match_type": "DATE_TOLERANCE",
+          "tolerance_days": 2,
+          "business_days_only": true,
+          "calendar_market": "TARGET2"
+        },
+        {
+          "field_a": "account_id",
+          "field_b": "account_id",
+          "match_type": "EXACT"
+        }
+      ]
+    },
+    {
+      "pass": 3,
+      "name": "Quantity rounding tolerance (1 unit)",
+      "type": "ONE_TO_ONE",
+      "key_rules": [
+        {
+          "field_a": "isin",
+          "field_b": "isin",
+          "match_type": "EXACT"
+        }
+      ],
+      "value_rules": [
+        {
+          "field_a": "quantity",
+          "field_b": "quantity",
+          "match_type": "NUMERIC_TOLERANCE",
+          "tolerance": 1.0
+        },
+        {
+          "field_a": "computed_market_value",
+          "field_b": "computed_market_value",
+          "match_type": "NUMERIC_TOLERANCE",
+          "tolerance": 5.0
+        },
+        {
+          "field_a": "settlement_date",
+          "field_b": "posting_date",
+          "match_type": "DATE_TOLERANCE",
+          "tolerance_days": 2,
+          "business_days_only": true,
+          "calendar_market": "TARGET2"
+        },
+        {
+          "field_a": "account_id",
+          "field_b": "account_id",
+          "match_type": "EXACT"
+        }
+      ]
+    },
+    {
+      "pass": 4,
+      "name": "Price/FX rounding tolerance on market value",
+      "type": "ONE_TO_ONE",
+      "key_rules": [
+        {
+          "field_a": "isin",
+          "field_b": "isin",
+          "match_type": "EXACT"
+        }
+      ],
+      "value_rules": [
+        {
+          "field_a": "quantity",
+          "field_b": "quantity",
+          "match_type": "EXACT"
+        },
+        {
+          "field_a": "computed_market_value",
+          "field_b": "computed_market_value",
+          "match_type": "NUMERIC_TOLERANCE",
+          "tolerance": 25.0
+        },
+        {
+          "field_a": "settlement_date",
+          "field_b": "posting_date",
+          "match_type": "DATE_TOLERANCE",
+          "tolerance_days": 2,
+          "business_days_only": true,
+          "calendar_market": "TARGET2"
+        },
+        {
+          "field_a": "account_id",
+          "field_b": "account_id",
+          "match_type": "EXACT"
+        }
+      ]
+    },
+    {
+      "pass": 5,
+      "name": "One-to-many split settlement",
+      "type": "ONE_TO_MANY",
+      "key_rules": [
+        {
+          "field_a": "isin",
+          "field_b": "isin",
+          "match_type": "EXACT"
+        }
+      ],
+      "restrict_isins": [
+        "GB00BH4HKS39"
+      ],
+      "group_by_b": [
+        "isin"
+      ],
+      "aggregate_field_b": "quantity",
+      "aggregate_op": "SUM",
+      "value_rules": [
+        {
+          "field_a": "quantity",
+          "field_b": "quantity",
+          "match_type": "NUMERIC_TOLERANCE",
+          "tolerance": 0.0
+        }
+      ]
+    },
+    {
+      "pass": 6,
+      "name": "Many-to-one aggregate",
+      "type": "MANY_TO_ONE",
+      "key_rules": [
+        {
+          "field_a": "isin",
+          "field_b": "isin",
+          "match_type": "EXACT"
+        }
+      ],
+      "restrict_isins": [
+        "US4592001014"
+      ],
+      "group_by_a": [
+        "isin"
+      ],
+      "aggregate_field_a": "quantity",
+      "aggregate_op": "SUM",
+      "value_rules": [
+        {
+          "field_a": "quantity",
+          "field_b": "quantity",
+          "match_type": "NUMERIC_TOLERANCE",
+          "tolerance": 0.0
+        }
+      ]
+    },
+    {
+      "pass": 7,
+      "name": "N-to-M subset sum",
+      "type": "N_TO_M_SUBSET_SUM",
+      "restrict_isins": [
+        "DE0005552004"
+      ],
+      "value_field_a": "quantity",
+      "value_field_b": "quantity",
+      "partition_col": "isin",
+      "tolerance": 1.0,
+      "performance_guard": {
+        "max_group_size": 4,
+        "max_rows_per_partition": 50,
+        "timeout_seconds": 30
+      }
+    }
+  ],
+  "regulatory_config": {
+    "emir": {
+      "enabled": true,
+      "dispute_amount_threshold_eur": 15000000.0,
+      "dispute_days_threshold": 15,
+      "auto_generate_notification": true,
+      "competent_authority": "BaFin"
+    },
+    "cass": {
+      "enabled": true,
+      "regime": "CASS_7A",
+      "reconciliation_frequency": "DAILY",
+      "shortfall_escalation_threshold_eur": 1000.0
+    }
+  },
+  "autonomy_config": {
+    "stp_confidence_threshold": 0.9,
+    "write_off_auto_approve_below_eur": 500.0,
+    "write_off_dual_checker_above_eur": 10000.0,
+    "maker_checker_same_person_allowed": false,
+    "pending_approval_expiry_hours": 24
+  },
+  "output_hash_spec": {
+    "hash_algorithm": "SHA256",
+    "amount_format": "2_decimal_string",
+    "quantity_format": "6_decimal_string",
+    "date_format": "%Y-%m-%d"
+  }
 }
